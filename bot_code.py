@@ -16,7 +16,7 @@ WEBAPP_HOST = "127.0.0.1"
 WEBAPP_PORT = 8443  # должен совпадать с proxy_pass в nginx
 
 # 🔹 Настройки 3x-ui
-XUI_API = "http://127.0.0.1:33465"   # панель 3x-ui, может быть другой порт
+XUI_API = "https://127.0.0.1:33465/7HWmi6anA3YCrCOtWf/login"   # панель 3x-ui, может быть другой порт
 XUI_USER = "Gena"                  # логин от панели
 XUI_PASS = "Tranzisto1"          # пароль от панели
 xui_token = None                    # будем хранить токен здесь
