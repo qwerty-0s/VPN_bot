@@ -3,6 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web, ClientSession
+from aiohttp import ClientSession, TCPConnector
 
 # -------------------
 # 🔹 Конфиг
@@ -37,10 +38,23 @@ async def echo_handler(message: types.Message):
 async def get_xui_token():
     """Получаем accessToken у 3x-ui"""
     global xui_token
-    async with ClientSession() as session:
-        async with session.post(f"{XUI_API}/login",
-                                json={"username": XUI_USER, "password": XUI_PASS}) as resp:
-            data = await resp.json()
+    # Отключаем проверку SSL (локально)
+    connector = TCPConnector(ssl=False)
+    
+    async with ClientSession(connector=connector) as session:
+        login_url = f"{XUI_API}/login"
+        payload = {"username": XUI_USER, "password": XUI_PASS}
+        
+        # allow_redirects=True чтобы следовать за редиректом (если есть)
+        async with session.post(login_url, json=payload, allow_redirects=True) as resp:
+            try:
+                data = await resp.json()
+            except Exception as e:
+                logging.error(f"❌ Ошибка при разборе ответа от 3x-ui: {e}")
+                text = await resp.text()
+                logging.error(f"Ответ сервера: {text}")
+                return
+            
             if data.get("success"):
                 xui_token = data["accessToken"]
                 logging.info("✅ Получен токен 3x-ui")
