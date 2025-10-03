@@ -35,6 +35,28 @@ xui_session: aiohttp.ClientSession | None = None
 @dp.message(F.text)
 async def echo_handler(message: types.Message):
     await message.answer(f"Ты написал: {message.text}")
+    
+    
+# обрабочтик /users 
+@dp.message(F.text == "/users")
+async def users_handler(message: types.Message):
+    users = await get_users()
+    if not users:
+        await message.answer("❌ Не удалось получить список пользователей")
+        return
+
+    # Для красоты формируем текст
+    reply_text = "📋 Список пользователей:\n\n"
+    if isinstance(users, dict) and "obj" in users:  
+        # Обычно список лежит в users["obj"]
+        for user in users["obj"]:
+            remark = user.get("remark", "—")
+            enable = "✅" if user.get("enable") else "❌"
+            reply_text += f"{enable} {remark}\n"
+    else:
+        reply_text += str(users)
+
+    await message.answer(reply_text)
 
 
 # -------------------
@@ -80,7 +102,7 @@ async def get_users():
         return None
 
     try:
-        async with xui_session.get(f"{XUI_API}/xui/inbounds/list") as resp:
+        async with xui_session.get(f"{XUI_API}/panel/api/inbounds/list") as resp:
             data = await resp.json(content_type=None)
             return data
     except Exception as e:
