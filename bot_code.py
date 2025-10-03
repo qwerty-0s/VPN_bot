@@ -97,8 +97,7 @@ async def get_xui_session():
 
 async def get_users():
     """Пример: получаем список пользователей из 3x-ui"""
-    global xui_session
-    
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -113,6 +112,7 @@ async def get_users():
             text = await resp.text()
             logging.info(f"📥 Ответ на list: {text}")
             data = await resp.json(content_type=None)
+            print(data)
             return data
     except Exception as e:
         logging.error(f"❌ Ошибка при получении пользователей: {e}")
