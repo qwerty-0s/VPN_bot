@@ -32,9 +32,9 @@ xui_session: aiohttp.ClientSession | None = None
 # -------------------
 # 🔹 Эхо-обработчик
 # -------------------
-@dp.message(F.text)
-async def echo_handler(message: types.Message):
-    await message.answer(f"Ты написал: {message.text}")
+#@dp.message(F.text)
+#async def echo_handler(message: types.Message):
+#    await message.answer(f"Ты написал: {message.text}")
     
     
 # обрабочтик /users 
@@ -102,7 +102,7 @@ async def get_users():
         return None
 
     try:
-        async with xui_session.get(f"{XUI_API}/panel/api/inbounds/list") as resp:
+        async with xui_session.post(f"{XUI_API}/panel/api/inbounds/list") as resp:
             text = await resp.text()
             logging.info(f"📥 Ответ на list: {text}")
             data = await resp.json(content_type=None)
@@ -110,6 +110,8 @@ async def get_users():
     except Exception as e:
         logging.error(f"❌ Ошибка при получении пользователей: {e}")
         return None
+    
+
 
 
 # -------------------
