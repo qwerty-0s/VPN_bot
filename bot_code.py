@@ -98,15 +98,17 @@ async def get_xui_session():
 async def get_users():
     """Пример: получаем список пользователей из 3x-ui"""
     global xui_session
+    
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
+    
     if not xui_session:
         logging.error("❌ Нет активной сессии для запросов к 3x-ui")
         return None
 
     try:
-        async with xui_session.post(f"{XUI_API_HTTP}/panel/api/inbounds/list", ssl=ssl_context
+        async with xui_session.post(f"{XUI_API}/panel/inbound/list", ssl=ssl_context
         ) as resp:
             text = await resp.text()
             logging.info(f"📥 Ответ на list: {text}")
