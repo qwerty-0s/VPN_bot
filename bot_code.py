@@ -80,18 +80,21 @@ async def get_xui_session():
         ) as resp:
             data = await resp.json(content_type=None)
             logging.info(f"Ответ логина: {data}")
+            logging.info(f"Заголовки: {resp.headers}")
 
-            # достаём куки из session
-            xui_cookies = session.cookie_jar.filter_cookies(XUI_API)
-            logging.info(f"Сохранённые куки: {xui_cookies}")
+            # достаём куку 3x-ui вручную
+            if "Set-Cookie" in resp.headers:
+                raw_cookie = resp.headers["Set-Cookie"]
+                # например: "3x-ui=....; Path=/; HttpOnly"
+                cookie_value = raw_cookie.split(";", 1)[0].split("=", 1)[1]
+                xui_cookies = {"3x-ui": cookie_value}
+                logging.info(f"Сохранённая кука: {xui_cookies}")
+
 
 async def get_users():
     global xui_cookies
     async with aiohttp.ClientSession(cookies=xui_cookies) as session:
-        async with session.post(
-            f"{XUI_API}/panel/inbound/list",
-            ssl=ssl_context
-        ) as resp:
+        async with session.post(f"{XUI_API}/panel/inbound/list", ssl=ssl_context) as resp:
             text = await resp.text()
             logging.info(f"Raw ответ: {text}")
             return await resp.json(content_type=None)
