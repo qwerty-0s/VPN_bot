@@ -16,6 +16,7 @@ WEBAPP_PORT = 8443
 
 # 🔹 Настройки 3x-ui
 XUI_API = "https://127.0.0.1:33465/7HWmi6anA3YCrCOtWf"
+XUI_API_HTTP = "http://127.0.0.1:33465/7HWmi6anA3YCrCOtWf"
 XUI_USER = "Gena"
 XUI_PASS = "Tranzisto1"
 
@@ -102,7 +103,7 @@ async def get_users():
         return None
 
     try:
-        async with xui_session.post(f"{XUI_API}/panel/api/inbounds/list") as resp:
+        async with xui_session.post(f"{XUI_API_HTTP}/panel/api/inbounds/list") as resp:
             text = await resp.text()
             logging.info(f"📥 Ответ на list: {text}")
             data = await resp.json(content_type=None)
