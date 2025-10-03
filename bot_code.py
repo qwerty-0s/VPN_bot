@@ -103,6 +103,8 @@ async def get_users():
 
     try:
         async with xui_session.get(f"{XUI_API}/panel/api/inbounds/list") as resp:
+            text = await resp.text()
+            logging.info(f"📥 Ответ на list: {text}")
             data = await resp.json(content_type=None)
             return data
     except Exception as e:
