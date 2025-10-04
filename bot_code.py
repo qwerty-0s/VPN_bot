@@ -85,10 +85,8 @@ async def get_xui_session():
             # достаём куку 3x-ui вручную
             if "Set-Cookie" in resp.headers:
                 raw_cookie = resp.headers["Set-Cookie"]
-                # например: "3x-ui=....; Path=/; HttpOnly"
-                cookie_value = raw_cookie.split(";", 1)[0].split("=", 1)[1]
-                xui_cookies = {"3x-ui": cookie_value}
-                logging.info(f"Сохранённая кука: {raw_cookie}")
+                xui_cookies = raw_cookie
+                logging.info(f"Сохранённая кука: {xui_cookies}")
 
 
 async def get_users():
