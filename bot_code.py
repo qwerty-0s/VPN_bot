@@ -88,7 +88,7 @@ async def get_xui_session():
                 # например: "3x-ui=....; Path=/; HttpOnly"
                 cookie_value = raw_cookie.split(";", 1)[0].split("=", 1)[1]
                 xui_cookies = {"3x-ui": cookie_value}
-                logging.info(f"Сохранённая кука: {xui_cookies}")
+                logging.info(f"Сохранённая кука: {raw_cookie}")
 
 
 async def get_users():
