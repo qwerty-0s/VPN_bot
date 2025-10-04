@@ -60,18 +60,19 @@ async def users_handler(message: types.Message):
     await message.answer(reply_text)
 
 
-# -------------------
-# 🔹 Авторизация в 3x-ui
-# -------------------
+xui_cookies: dict[str, str] = {}
+
+# общий SSL-контекст (выключаем проверку сертификата)
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
-# тут будут куки после логина
-xui_cookies = {}
 
 async def get_xui_session():
+    """Логинимся в 3x-ui и сохраняем куку 3x-ui"""
     global xui_cookies
+    xui_cookies.clear()
+
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{XUI_API}/login",
@@ -82,21 +83,35 @@ async def get_xui_session():
             logging.info(f"Ответ логина: {data}")
             logging.info(f"Заголовки: {resp.headers}")
 
-            # достаём куку 3x-ui вручную
-            if "Set-Cookie" in resp.headers:
-                raw_cookie = resp.headers["Set-Cookie"]
-                xui_cookies = raw_cookie
-                logging.info(f"Сохранённая кука: {xui_cookies}")
+            # достаём куку
+            for name, cookie in resp.cookies.items():
+                xui_cookies[name] = cookie.value
+
+            logging.info(f"Сохранённые куки: {xui_cookies}")
 
 
 async def get_users():
+    """Запрос списка пользователей с кукой"""
     global xui_cookies
+
+    if not xui_cookies:
+        logging.error("❌ Нет куки, попробуй заново залогиниться")
+        return None
+
     async with aiohttp.ClientSession(cookies=xui_cookies) as session:
-        async with session.post(f"{XUI_API}/panel/inbound/list", ssl=ssl_context) as resp:
+        async with session.post(
+            f"{XUI_API}/panel/inbound/list",
+            json={},
+            ssl=ssl_context
+        ) as resp:
             text = await resp.text()
-            logging.info(f"Raw ответ: {text}")
-            return await resp.json(content_type=None)
-    
+            logging.info(f"📥 Ответ на list: {text}")
+
+            try:
+                return await resp.json(content_type=None)
+            except Exception as e:
+                logging.error(f"❌ Ошибка парсинга JSON: {e}")
+                return None
 
 
 
