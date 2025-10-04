@@ -106,6 +106,7 @@ async def get_users():
         ) as resp:
             text = await resp.text()
             logging.info(f"📥 Ответ на list: {text}")
+            logging.info(f"Куки при запросе: {session.cookie_jar.filter_cookies(XUI_API)}")
 
             try:
                 return await resp.json(content_type=None)
