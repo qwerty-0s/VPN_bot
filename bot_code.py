@@ -15,8 +15,7 @@ WEBAPP_HOST = "127.0.0.1"
 WEBAPP_PORT = 8443
 
 # 🔹 Настройки 3x-ui
-XUI_API = "https://127.0.0.1:33465/7HWmi6anA3YCrCOtWf"
-XUI_API_HTTP = "http://127.0.0.1:33465/7HWmi6anA3YCrCOtWf"
+XUI_API = "https://109.234.34.215:33465/7HWmi6anA3YCrCOtWf"
 XUI_USER = "Gena"
 XUI_PASS = "Tranzisto1"
 
@@ -31,14 +30,69 @@ xui_session: aiohttp.ClientSession | None = None
 
 
 # -------------------
-# 🔹 Эхо-обработчик
+# 🔹 Авторизация в 3x-ui
 # -------------------
-#@dp.message(F.text)
-#async def echo_handler(message: types.Message):
-#    await message.answer(f"Ты написал: {message.text}")
-    
-    
-# обрабочтик /users 
+async def get_xui_session():
+    """Логинимся в 3x-ui и возвращаем aiohttp.ClientSession с куками"""
+    global xui_session
+
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar())
+    try:
+        async with session.post(
+            f"{XUI_API}/login",
+            json={"username": XUI_USER, "password": XUI_PASS},
+            ssl=False,  # как -k в curl
+            headers={"Content-Type": "application/json"}
+        ) as resp:
+            text = await resp.text()
+            logging.info(f"Ответ сервера 3x-ui (login): {text}")
+            data = await resp.json(content_type=None)
+
+            if data.get("success"):
+                logging.info("✅ Успешный вход в 3x-ui, куки сохранены")
+                xui_session = session
+            else:
+                logging.error(f"❌ Ошибка входа: {data}")
+                await session.close()
+                xui_session = None
+    except Exception as e:
+        logging.error(f"❌ Ошибка при соединении с 3x-ui: {e}")
+        await session.close()
+        xui_session = None
+
+
+# -------------------
+# 🔹 Получение списка пользователей
+# -------------------
+async def get_users():
+    """Получаем список пользователей из 3x-ui"""
+    global xui_session
+    if not xui_session:
+        logging.error("❌ Нет активной сессии для запросов к 3x-ui")
+        return None
+
+    try:
+        async with xui_session.get(
+            f"{XUI_API}/panel/api/inbounds/list",
+            ssl=False,
+            headers={"Content-Type": "application/json"}
+        ) as resp:
+            text = await resp.text()
+            logging.info(f"📥 Ответ API /panel/api/inbounds/list: {text}")
+            data = await resp.json(content_type=None)
+            return data
+    except Exception as e:
+        logging.error(f"❌ Ошибка при получении пользователей: {e}")
+        return None
+
+
+# -------------------
+# 🔹 Команда /users
+# -------------------
 @dp.message(F.text == "/users")
 async def users_handler(message: types.Message):
     users = await get_users()
@@ -46,74 +100,25 @@ async def users_handler(message: types.Message):
         await message.answer("❌ Не удалось получить список пользователей")
         return
 
-    # Для красоты формируем текст
     reply_text = "📋 Список пользователей:\n\n"
-    if isinstance(users, dict) and "obj" in users:  
-        # Обычно список лежит в users["obj"]
+    if isinstance(users, dict) and "obj" in users:
         for user in users["obj"]:
             remark = user.get("remark", "—")
             enable = "✅" if user.get("enable") else "❌"
-            reply_text += f"{enable} {remark}\n"
+            expiry = user.get("expiryTime")
+            reply_text += f"{enable} {remark} — {expiry}\n"
     else:
         reply_text += str(users)
 
     await message.answer(reply_text)
 
 
-xui_cookies: dict[str, str] = {}
-
-# общий SSL-контекст (выключаем проверку сертификата)
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
-
-
-async def get_xui_session():
-    """Логинимся в 3x-ui и сохраняем куку 3x-ui"""
-    global xui_cookies
-    xui_cookies.clear()
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{XUI_API}/login",
-            json={"username": XUI_USER, "password": XUI_PASS},
-            ssl=ssl_context
-        ) as resp:
-            data = await resp.json(content_type=None)
-            logging.info(f"Ответ логина: {data}")
-            logging.info(f"Заголовки: {resp.headers}")
-
-            # достаём куку
-            for name, cookie in resp.cookies.items():
-                xui_cookies[name] = cookie.value
-
-            logging.info(f"Сохранённые куки: {xui_cookies}")
-
-
-async def get_users():
-    """Запрос списка пользователей с кукой"""
-    global xui_cookies
-
-    if not xui_cookies:
-        logging.error("❌ Нет куки, попробуй заново залогиниться")
-        return None
-
-    async with aiohttp.ClientSession(cookies=xui_cookies) as session:
-        async with session.post(
-            f"{XUI_API}/panel/inbound/list",
-            json={},
-            ssl=ssl_context
-        ) as resp:
-            text = await resp.text()
-            logging.info(f"📥 Ответ на list: {text}")
-            logging.info(f"Куки при запросе: {session.cookie_jar.filter_cookies(XUI_API)}")
-
-            try:
-                return await resp.json(content_type=None)
-            except Exception as e:
-                logging.error(f"❌ Ошибка парсинга JSON: {e}")
-                return None
-
+# -------------------
+# 🔹 Эхо
+# -------------------
+@dp.message(F.text)
+async def echo_handler(message: types.Message):
+    await message.answer(f"Ты написал: {message.text}")
 
 
 # -------------------
