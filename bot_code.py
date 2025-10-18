@@ -4,6 +4,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 import aiohttp
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 API_TOKEN = "8290944633:AAG9FTaFvpkJiTF89N9u-WhW_puypYIqf30"
 WEBHOOK_URL = "https://v460023.hosted-by-vdsina.com/webhook"
@@ -102,6 +103,36 @@ async def users_handler(message: types.Message):
         reply_text += str(users)
 
     await message.answer(reply_text)
+
+
+@dp.message(F.text == "/start")
+async def start_handler(message: types.Message):
+    user = message.from_user
+    await message.answer(
+        f"👋 Привет, {user.first_name}!\n\n"
+        "Добро пожаловать в VPN-бот 👇\n"
+        "Я помогу тебе управлять подключением и получать доступ к VPN.\n\n"
+        "🚀 Нажми кнопку ниже, чтобы начать:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Start", callback_data="start_pressed")]
+            ]
+        )
+    )
+
+
+# 🔹 Обработчик кнопки 'Start'
+@dp.callback_query(F.data == "start_pressed")
+async def start_pressed(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "✅ Отлично! Вот краткая инструкция:\n\n"
+        "1️⃣ Скоро здесь появится возможность получить пробную VPN-подписку.\n"
+        "2️⃣ Также ты сможешь управлять своими подключениями прямо из Telegram.\n"
+        "3️⃣ А пока можешь использовать команду /users, чтобы посмотреть текущих пользователей.\n\n"
+        "💡 Оставайся на связи — обновления уже скоро!"
+    )
+    await callback.answer()
+
 
 
 # 🔹 Жизненный цикл
