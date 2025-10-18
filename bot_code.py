@@ -5,6 +5,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 import aiohttp
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 API_TOKEN = "8290944633:AAG9FTaFvpkJiTF89N9u-WhW_puypYIqf30"
 WEBHOOK_URL = "https://v460023.hosted-by-vdsina.com/webhook"
@@ -105,33 +106,35 @@ async def users_handler(message: types.Message):
     await message.answer(reply_text)
 
 
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📋 Список пользователей")],
+        [KeyboardButton(text="ℹ️ Помощь"), KeyboardButton(text="🚀 Пробная подписка")]
+    ],
+    resize_keyboard=True  # подгоняет размер под экран
+)
+
+# 🔹 Команда /start с меню
 @dp.message(F.text == "/start")
 async def start_handler(message: types.Message):
-    user = message.from_user
     await message.answer(
-        f"👋 Привет, {user.first_name}!\n\n"
-        "Добро пожаловать в VPN-бот 👇\n"
-        "Я помогу тебе управлять подключением и получать доступ к VPN.\n\n"
-        "🚀 Нажми кнопку ниже, чтобы начать:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Start", callback_data="start_pressed")]
-            ]
-        )
+        "👋 Привет! Я помогу тебе управлять VPN.\n\nВыбери действие ниже:",
+        reply_markup=main_menu
     )
+    
+@dp.message(F.text == "📋 Список пользователей")
+async def show_users_button(message: types.Message):
+    await message.answer("Загружаю список пользователей...")
+    users = await get_users()
+    # обработка ответа как раньше
 
+@dp.message(F.text == "ℹ️ Помощь")
+async def help_button(message: types.Message):
+    await message.answer("ℹ️ Здесь будет помощь и инструкции.")
 
-# 🔹 Обработчик кнопки 'Start'
-@dp.callback_query(F.data == "start_pressed")
-async def start_pressed(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "✅ Отлично! Вот краткая инструкция:\n\n"
-        "1️⃣ Скоро здесь появится возможность получить пробную VPN-подписку.\n"
-        "2️⃣ Также ты сможешь управлять своими подключениями прямо из Telegram.\n"
-        "3️⃣ А пока можешь использовать команду /users, чтобы посмотреть текущих пользователей.\n\n"
-        "💡 Оставайся на связи — обновления уже скоро!"
-    )
-    await callback.answer()
+@dp.message(F.text == "🚀 Пробная подписка")
+async def trial_button(message: types.Message):
+    await message.answer("🚀 Возможность оформить пробную подписку появится скоро!")
 
 
 
