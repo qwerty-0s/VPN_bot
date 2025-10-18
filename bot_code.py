@@ -126,7 +126,24 @@ async def start_handler(message: types.Message):
 async def show_users_button(message: types.Message):
     await message.answer("Загружаю список пользователей...")
     users = await get_users()
-    # обработка ответа как раньше
+    if not users:
+        await message.answer("❌ Не удалось получить список пользователей.")
+        return
+
+    if "raw" in users:
+        await message.answer("⚠️ Ответ не JSON:\n" + users["raw"][:3000])
+        return
+
+    reply_text = "📋 Список пользователей:\n\n"
+    if "obj" in users:
+        for user in users["obj"]:
+            remark = user.get("remark", "—")
+            enable = "✅" if user.get("enable") else "❌"
+            reply_text += f"{enable} {remark}\n"
+    else:
+        reply_text += str(users)
+
+    await message.answer(reply_text)
 
 @dp.message(F.text == "ℹ️ Помощь")
 async def help_button(message: types.Message):
