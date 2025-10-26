@@ -174,7 +174,7 @@ async def create_trial_inbound():
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
     email = f"trial_{int(datetime.now().timestamp())}"
-    port = get_free_port()
+    port = await get_free_port()
     
     payload = {
         "up": 0,
