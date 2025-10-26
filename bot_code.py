@@ -6,6 +6,12 @@ from aiohttp import web
 import aiohttp
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+import json
+import uuid
+import base64
+from io import BytesIO
+from datetime import datetime, timedelta
+
 
 API_TOKEN = "8290944633:AAG9FTaFvpkJiTF89N9u-WhW_puypYIqf30"
 WEBHOOK_URL = "https://v460023.hosted-by-vdsina.com/webhook"
@@ -81,6 +87,139 @@ async def get_users():
         logging.error(f"❌ Ошибка при получении пользователей: {e}")
         return None
 
+# получение ключей для reality 
+
+async def get_new_reality_keys():
+    global xui_cookie
+    if not xui_cookie:
+        await get_xui_cookie()  # логинимся, если cookie нет
+
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": xui_cookie
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{XUI_API}/panel/api/server/getNewX25519Cert",
+                headers=headers,
+                ssl=False
+            ) as resp:
+                text = await resp.text()
+                logging.info(f"📥 Ответ getNewX25519Cert: {text}")
+                try:
+                    data = await resp.json(content_type=None)
+                    return data
+                except Exception:
+                    return {"raw": text}
+    except Exception as e:
+        logging.error(f"❌ Ошибка при запросе Reality-ключей: {e}")
+        return None
+
+# создание пробной подписки 
+
+async def create_trial_inbound():
+    global xui_cookie
+    if not xui_cookie:
+        await get_xui_cookie()
+
+    # Генерируем Reality ключи
+    keys = await get_new_reality_keys()
+    if not keys or "obj" not in keys:
+        logging.error("❌ Не удалось получить Reality ключи.")
+        return None
+
+    private_key = keys["obj"]["privateKey"]
+    public_key = keys["obj"]["publicKey"]
+
+    expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
+    client_uuid = str(uuid.uuid4())
+    email = f"trial_{int(datetime.now().timestamp())}"
+
+    payload = {
+        "up": 0,
+        "down": 0,
+        "total": 0,
+        "remark": email,
+        "enable": True,
+        "expiryTime": expiry,
+        "listen": "",
+        "port": 60000,  # можно выбрать свободный порт
+        "protocol": "vless",
+        "settings": json.dumps({
+            "clients": [
+                {
+                    "id": client_uuid,
+                    "flow": "",
+                    "email": email,
+                    "limitIp": 0,
+                    "totalGB": 0,
+                    "expiryTime": expiry,
+                    "enable": True,
+                    "tgId": "",
+                    "subId": "trial_" + email[-6:],
+                    "comment": "",
+                    "reset": 0
+                }
+            ],
+            "decryption": "none",
+            "encryption": "none"
+        }),
+        "streamSettings": json.dumps({
+            "network": "tcp",
+            "security": "reality",
+            "externalProxy": [],
+            "realitySettings": {
+                "show": False,
+                "xver": 0,
+                "target": "google.com:443",
+                "serverNames": ["google.com", "www.google.com"],
+                "privateKey": private_key,
+                "shortIds": ["32a221", "2f835f2b62"],
+                "settings": {
+                    "publicKey": public_key,
+                    "fingerprint": "chrome",
+                    "spiderX": "/"
+                }
+            },
+            "tcpSettings": {
+                "acceptProxyProtocol": False,
+                "header": {"type": "none"}
+            }
+        }),
+        "sniffing": json.dumps({
+            "enabled": False,
+            "destOverride": ["http", "tls", "quic", "fakedns"],
+            "metadataOnly": False,
+            "routeOnly": False
+        })
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": xui_cookie
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{XUI_API}/panel/api/inbounds/add",
+            headers=headers,
+            json=payload,
+            ssl=False
+        ) as resp:
+            text = await resp.text()
+            logging.info(f"📤 Ответ /inbounds/add: {text}")
+            data = await resp.json(content_type=None)
+            if data.get("success"):
+                return {
+                    "uuid": client_uuid,
+                    "publicKey": public_key,
+                    "port": payload["port"]
+                }
+            return None
+
+
 
 # 🔹 Команда /users
 @dp.message(F.text == "/users")
@@ -151,7 +290,31 @@ async def help_button(message: types.Message):
 
 @dp.message(F.text == "🚀 Пробная подписка")
 async def trial_button(message: types.Message):
-    await message.answer("🚀 Возможность оформить пробную подписку появится скоро!")
+
+    result = await create_trial_inbound()
+    if not result:
+        await message.answer("❌ Не удалось создать пробную подписку.")
+        return
+
+    # ✅ Собираем ссылку для подключения
+    domain = "109.234.34.215"  # или твой домен (например vpn.example.com)
+    uuid = result["uuid"]
+    pbk = result["publicKey"]
+    port = result["port"]
+
+    link = (
+        f"vless://{uuid}@{domain}:{port}"
+        f"?encryption=none&security=reality&fp=chrome"
+        f"&pbk={pbk}&sid=32a221&sni=google.com#Trial"
+    )
+
+    await message.answer(
+        "✅ Пробная подписка создана!\n\n"
+        "Срок действия: *3 дня*\n\n"
+        f"🔗 Ссылка для подключения:\n`{link}`",
+        parse_mode="Markdown"
+    )
+
 
 
 
