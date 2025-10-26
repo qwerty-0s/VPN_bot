@@ -12,7 +12,7 @@ import uuid
 import base64
 from io import BytesIO
 from datetime import datetime, timedelta
-
+import random
 
 API_TOKEN = "8290944633:AAG9FTaFvpkJiTF89N9u-WhW_puypYIqf30"
 WEBHOOK_URL = "https://v460023.hosted-by-vdsina.com/webhook"
@@ -118,6 +118,43 @@ async def get_new_reality_keys():
         logging.error(f"❌ Ошибка при запросе Reality-ключей: {e}")
         return None
 
+
+# 🔹 Получение свободного порта
+async def get_free_port():
+    global xui_cookie
+    if not xui_cookie:
+        await get_xui_cookie()
+
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": xui_cookie
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{XUI_API}/panel/api/inbounds/list",
+                headers=headers,
+                ssl=False
+            ) as resp:
+                data = await resp.json(content_type=None)
+
+                # собираем уже занятые порты
+                used_ports = {int(i["port"]) for i in data.get("obj", []) if "port" in i}
+
+                # ищем свободный порт в диапазоне
+                for _ in range(1000):
+                    port = random.randint(10000, 65000)
+                    if port not in used_ports:
+                        return port
+
+                logging.error("❌ Не удалось найти свободный порт")
+                return None
+    except Exception as e:
+        logging.error(f"❌ Ошибка при получении свободного порта: {e}")
+        return None
+
+
 # создание пробной подписки 
 
 async def create_trial_inbound():
@@ -137,7 +174,8 @@ async def create_trial_inbound():
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
     email = f"trial_{int(datetime.now().timestamp())}"
-
+    port = get_free_port()
+    
     payload = {
         "up": 0,
         "down": 0,
@@ -146,7 +184,7 @@ async def create_trial_inbound():
         "enable": True,
         "expiryTime": expiry,
         "listen": "",
-        "port": 60000,  # можно выбрать свободный порт
+        "port": port,  
         "protocol": "vless",
         "settings": json.dumps({
             "clients": [
