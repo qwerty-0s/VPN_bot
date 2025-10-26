@@ -1,4 +1,5 @@
 import asyncio
+import aiogram
 import logging
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
