@@ -13,6 +13,7 @@ import base64
 from io import BytesIO
 from datetime import datetime, timedelta
 import random
+import aiosqlite
 
 API_TOKEN = "8290944633:AAG9FTaFvpkJiTF89N9u-WhW_puypYIqf30"
 WEBHOOK_URL = "https://v460023.hosted-by-vdsina.com/webhook"
@@ -28,6 +29,62 @@ dp = Dispatcher()
 
 # глобальная переменная для cookie
 xui_cookie = None
+
+# Путь к базе данных
+DB_PATH = "vpn_bot.db"
+
+
+# 🔹 Инициализация базы данных
+async def init_db():
+    """Создает таблицу для хранения пользователей, если её нет"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS trial_users (
+                telegram_id INTEGER PRIMARY KEY,
+                uuid TEXT NOT NULL,
+                email TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                public_key TEXT NOT NULL,
+                expiry_time INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.commit()
+        logging.info("✅ База данных инициализирована")
+
+
+# 🔹 Проверка существования пользователя
+async def user_exists(telegram_id: int) -> bool:
+    """Проверяет, существует ли пользователь с таким telegram_id в базе"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM trial_users WHERE telegram_id = ?",
+                (telegram_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row is not None
+    except Exception as e:
+        logging.error(f"❌ Ошибка при проверке пользователя: {e}")
+        return False
+
+
+# 🔹 Сохранение пользователя в базу данных
+async def save_user(telegram_id: int, uuid: str, email: str, port: int, 
+                   public_key: str, expiry_time: int):
+    """Сохраняет данные пользователя в базу данных"""
+    try:
+        created_at = datetime.now().isoformat()
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+                INSERT INTO trial_users 
+                (telegram_id, uuid, email, port, public_key, expiry_time, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (telegram_id, uuid, email, port, public_key, expiry_time, created_at))
+            await db.commit()
+            logging.info(f"✅ Пользователь {telegram_id} сохранен в БД")
+    except Exception as e:
+        logging.error(f"❌ Ошибка при сохранении пользователя: {e}")
 
 
 # 🔹 Авторизация
@@ -157,8 +214,18 @@ async def get_free_port():
 
 # создание пробной подписки 
 
-async def create_trial_inbound():
+async def create_trial_inbound(telegram_id: int):
+    """
+    Создает пробную подписку для пользователя.
+    Проверяет, не существует ли уже подписка для этого telegram_id.
+    """
     global xui_cookie
+    
+    # Проверяем, существует ли уже пользователь
+    if await user_exists(telegram_id):
+        logging.warning(f"⚠️ Пользователь {telegram_id} уже имеет пробную подписку")
+        return {"error": "already_exists"}
+    
     if not xui_cookie:
         await get_xui_cookie()
 
@@ -251,6 +318,15 @@ async def create_trial_inbound():
             logging.info(f"📤 Ответ /inbounds/add: {text}")
             data = await resp.json(content_type=None)
             if data.get("success"):
+                # Сохраняем пользователя в базу данных
+                await save_user(
+                    telegram_id=telegram_id,
+                    uuid=client_uuid,
+                    email=email,
+                    port=payload["port"],
+                    public_key=public_key,
+                    expiry_time=expiry
+                )
                 return {
                     "uuid": client_uuid,
                     "publicKey": public_key,
@@ -329,10 +405,19 @@ async def help_button(message: types.Message):
 
 @dp.message(F.text == "🚀 Пробная подписка")
 async def trial_button(message: types.Message):
-
-    result = await create_trial_inbound()
+    telegram_id = message.from_user.id
+    
+    result = await create_trial_inbound(telegram_id)
+    
     if not result:
         await message.answer("❌ Не удалось создать пробную подписку.")
+        return
+    
+    if result.get("error") == "already_exists":
+        await message.answer(
+            "⚠️ У вас уже есть пробная подписка!\n\n"
+            "Один пользователь может создать только одну пробную подписку."
+        )
         return
 
     # ✅ Собираем ссылку для подключения
@@ -359,6 +444,7 @@ async def trial_button(message: types.Message):
 
 # 🔹 Жизненный цикл
 async def on_startup(app: web.Application):
+    await init_db()  # инициализируем БД при старте
     await bot.set_webhook(WEBHOOK_URL)
     await get_xui_cookie()  # логинимся при старте
 
