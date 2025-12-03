@@ -413,9 +413,10 @@ async def handle_short_sub(request: web.Request) -> web.Response:
     """
     HTTP-обработчик для коротких ссылок /sub/{short_id}.
     По short_id достаёт данные из БД и возвращает полный vless:// URL.
+    По умолчанию возвращает base64 формат для импорта в v2rayNG.
     Поддерживает два формата:
-    - По умолчанию: прямая ссылка vless://...
-    - ?format=base64: subscription формат (base64) для импорта в v2rayNG
+    - По умолчанию: subscription формат (base64) для импорта в v2rayNG
+    - ?format=plain: прямая ссылка vless://...
     """
     short_id = request.match_info.get("short_id")
     if not short_id:
@@ -437,16 +438,14 @@ async def handle_short_sub(request: web.Request) -> web.Response:
     
     # Проверяем формат запроса
     format_param = request.query.get("format", "").lower()
-    if format_param == "base64" or format_param == "subscription":
-        # Возвращаем в формате subscription (base64-кодированный список ссылок)
-        # v2rayNG лучше импортирует такой формат
+    if format_param == "plain" or format_param == "direct":
+        # Возвращаем прямую ссылку (для просмотра/копирования)
+        return web.Response(text=vless_link, content_type="text/plain", charset="utf-8")
+    else:
+        # По умолчанию возвращаем base64 формат (subscription) для импорта в v2rayNG
         import base64
         subscription_content = base64.b64encode(vless_link.encode("utf-8")).decode("utf-8")
         return web.Response(text=subscription_content, content_type="text/plain", charset="utf-8")
-    else:
-        # По умолчанию возвращаем прямую ссылку
-        # В aiohttp charset нужно передавать отдельным аргументом, а не в content_type
-        return web.Response(text=vless_link, content_type="text/plain", charset="utf-8")
 
 # 🔹 Команда /start с меню
 @dp.message(F.text == "/start")
