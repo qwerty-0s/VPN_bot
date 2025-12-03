@@ -430,8 +430,8 @@ async def handle_short_sub(request: web.Request) -> web.Response:
         f"?encryption=none&security=reality&fp=chrome"
         f"&pbk={public_key}&sid=32a221&sni=google.com#Trial"
     )
-
-    return web.Response(text=vless_link, content_type="text/plain; charset=utf-8")
+    # В aiohttp charset нужно передавать отдельным аргументом, а не в content_type
+    return web.Response(text=vless_link, content_type="text/plain", charset="utf-8")
 
 # 🔹 Команда /start с меню
 @dp.message(F.text == "/start")
