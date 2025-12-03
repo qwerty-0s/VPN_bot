@@ -427,8 +427,9 @@ async def handle_short_sub(request: web.Request) -> web.Response:
 
     vless_link = (
         f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
-        f"?encryption=none&security=reality&fp=chrome"
-        f"&pbk={public_key}&sid=32a221&sni=google.com#Trial"
+        f"?type=tcp&encryption=none&security=reality"
+        f"&pbk={public_key}&fp=chrome&sni=google.com"
+        f"&sid=32a221&spx=%2F#Trial"
     )
     # В aiohttp charset нужно передавать отдельным аргументом, а не в content_type
     return web.Response(text=vless_link, content_type="text/plain", charset="utf-8")
