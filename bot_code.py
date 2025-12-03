@@ -410,14 +410,6 @@ async def get_user_by_short_id(short_id: str):
 
 
 async def handle_short_sub(request: web.Request) -> web.Response:
-    """
-    HTTP-обработчик для коротких ссылок /sub/{short_id}.
-    По short_id достаёт данные из БД и возвращает полный vless:// URL.
-    По умолчанию возвращает стандартный subscription формат (прямая ссылка) для импорта в v2rayNG.
-    Поддерживает два формата:
-    - По умолчанию: прямая ссылка vless://... (стандартный subscription формат для v2rayNG)
-    - ?format=base64: base64-кодированный формат (если требуется)
-    """
     short_id = request.match_info.get("short_id")
     if not short_id:
         return web.Response(status=400, text="short_id is required")
@@ -426,27 +418,27 @@ async def handle_short_sub(request: web.Request) -> web.Response:
     if not row:
         return web.Response(status=404, text="Link not found or expired")
 
-    # row: (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
     _, uuid_value, _, port, public_key, _, _, _ = row
 
-    vless_link = (
+    node = (
         f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
         f"?type=tcp&encryption=none&security=reality"
         f"&pbk={public_key}&fp=chrome&sni=google.com"
         f"&sid=32a221&spx=%2F#Trial"
     )
-    
-    # Проверяем формат запроса
-    format_param = request.query.get("format", "").lower()
-    if format_param == "base64" or format_param == "b64":
-        # Возвращаем base64 формат (если требуется)
-        import base64
-        subscription_content = base64.b64encode(vless_link.encode("utf-8")).decode("utf-8")
-        return web.Response(text=subscription_content, content_type="text/plain", charset="utf-8")
-    else:
-        # По умолчанию возвращаем прямую ссылку (стандартный subscription формат для v2rayNG)
-        # v2rayNG автоматически импортирует ссылки в формате vless://... по одной на строку
-        return web.Response(text=vless_link, content_type="text/plain", charset="utf-8")
+
+    # subscription = одна строка, заканчивается \n
+    subscription_text = node + "\n"
+
+    # кодируем в base64
+    subscription_b64 = base64.b64encode(subscription_text.encode()).decode()
+
+    return web.Response(
+        text=subscription_b64,
+        content_type="text/plain",
+        charset="utf-8",
+    )
+
 
 # 🔹 Команда /start с меню
 @dp.message(F.text == "/start")
