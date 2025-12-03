@@ -14,6 +14,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 import random
 import aiosqlite
+import secrets
 
 API_TOKEN = "8290944633:AAG9FTaFvpkJiTF89N9u-WhW_puypYIqf30"
 WEBHOOK_URL = "https://v460023.hosted-by-vdsina.com/webhook"
@@ -33,6 +34,9 @@ xui_cookie = None
 # Путь к базе данных
 DB_PATH = "vpn_bot.db"
 
+# Домен фронта, который будут видеть пользователи (без IP)
+FRONT_DOMAIN = "proxima-test.duckdns.org"
+
 
 # 🔹 Инициализация базы данных
 async def init_db():
@@ -46,9 +50,16 @@ async def init_db():
                 port INTEGER NOT NULL,
                 public_key TEXT NOT NULL,
                 expiry_time INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                short_id TEXT
             )
         """)
+        # Миграция для старых баз без столбца short_id
+        try:
+            await db.execute("ALTER TABLE trial_users ADD COLUMN short_id TEXT")
+        except Exception:
+            # Колонка уже существует или другая некритичная ошибка
+            pass
         await db.commit()
         logging.info("✅ База данных инициализирована")
 
@@ -70,17 +81,24 @@ async def user_exists(telegram_id: int) -> bool:
 
 
 # 🔹 Сохранение пользователя в базу данных
-async def save_user(telegram_id: int, uuid: str, email: str, port: int, 
-                   public_key: str, expiry_time: int):
+async def save_user(
+    telegram_id: int,
+    uuid: str,
+    email: str,
+    port: int,
+    public_key: str,
+    expiry_time: int,
+    short_id: str,
+):
     """Сохраняет данные пользователя в базу данных"""
     try:
         created_at = datetime.now().isoformat()
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("""
                 INSERT INTO trial_users 
-                (telegram_id, uuid, email, port, public_key, expiry_time, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (telegram_id, uuid, email, port, public_key, expiry_time, created_at))
+                (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id))
             await db.commit()
             logging.info(f"✅ Пользователь {telegram_id} сохранен в БД")
     except Exception as e:
@@ -241,6 +259,8 @@ async def create_trial_inbound(telegram_id: int):
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
     email = f"trial_{int(datetime.now().timestamp())}"
+    # короткий идентификатор для пользователя/подписки
+    short_id = secrets.token_urlsafe(6)
     port = await get_free_port()
     
     payload = {
@@ -325,12 +345,14 @@ async def create_trial_inbound(telegram_id: int):
                     email=email,
                     port=payload["port"],
                     public_key=public_key,
-                    expiry_time=expiry
+                    expiry_time=expiry,
+                    short_id=short_id,
                 )
                 return {
                     "uuid": client_uuid,
                     "publicKey": public_key,
-                    "port": payload["port"]
+                    "port": payload["port"],
+                    "short_id": short_id,
                 }
             return None
 
@@ -367,6 +389,49 @@ main_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True  # подгоняет размер под экран
 )
+
+
+async def get_user_by_short_id(short_id: str):
+    """
+    Возвращает запись пользователя по короткому идентификатору.
+    """
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id "
+                "FROM trial_users WHERE short_id = ?",
+                (short_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row
+    except Exception as e:
+        logging.error(f"❌ Ошибка при поиске short_id={short_id}: {e}")
+        return None
+
+
+async def handle_short_sub(request: web.Request) -> web.Response:
+    """
+    HTTP-обработчик для коротких ссылок /sub/{short_id}.
+    По short_id достаёт данные из БД и возвращает полный vless:// URL.
+    """
+    short_id = request.match_info.get("short_id")
+    if not short_id:
+        return web.Response(status=400, text="short_id is required")
+
+    row = await get_user_by_short_id(short_id)
+    if not row:
+        return web.Response(status=404, text="Link not found or expired")
+
+    # row: (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
+    _, uuid_value, _, port, public_key, _, _, _ = row
+
+    vless_link = (
+        f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
+        f"?encryption=none&security=reality&fp=chrome"
+        f"&pbk={public_key}&sid=32a221&sni=google.com#Trial"
+    )
+
+    return web.Response(text=vless_link, content_type="text/plain; charset=utf-8")
 
 # 🔹 Команда /start с меню
 @dp.message(F.text == "/start")
@@ -408,7 +473,7 @@ async def trial_button(message: types.Message):
     telegram_id = message.from_user.id
     
     result = await create_trial_inbound(telegram_id)
-    
+
     if not result:
         await message.answer("❌ Не удалось создать пробную подписку.")
         return
@@ -420,22 +485,17 @@ async def trial_button(message: types.Message):
         )
         return
 
-    # ✅ Собираем ссылку для подключения
-    domain = "109.234.34.215"  # или твой домен (например vpn.example.com)
-    uuid = result["uuid"]
-    pbk = result["publicKey"]
-    port = result["port"]
-
-    link = (
-        f"vless://{uuid}@{domain}:{port}"
-        f"?encryption=none&security=reality&fp=chrome"
-        f"&pbk={pbk}&sid=32a221&sni=google.com#Trial"
-    )
+    # ✅ Собираем короткую ссылку для подписки (без IP)
+    short_id = result["short_id"]
+    link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
 
     await message.answer(
         "✅ Пробная подписка создана!\n\n"
         "Срок действия: *3 дня*\n\n"
-        f"🔗 Ссылка для подключения:\n`{link}`",
+        "🔗 Ваша короткая ссылка на подписку (без IP):\n"
+        f"`{link}`\n\n"
+        "Эту ссылку можно сохранить и использовать позже. "
+        "Если IP сервера изменится, ссылка останется рабочей.",
         parse_mode="Markdown"
     )
 
@@ -457,6 +517,8 @@ def main():
     logging.basicConfig(level=logging.INFO)
     app = web.Application()
     SimpleRequestHandler(dp, bot).register(app, path="/webhook")
+    # HTTP-роут для коротких ссылок на подписку
+    app.router.add_get("/sub/{short_id}", handle_short_sub)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     setup_application(app, dp, bot=bot)
