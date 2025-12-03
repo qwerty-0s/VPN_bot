@@ -412,32 +412,42 @@ async def get_user_by_short_id(short_id: str):
 async def handle_short_sub(request: web.Request) -> web.Response:
     short_id = request.match_info.get("short_id")
     if not short_id:
-        return web.Response(status=400, text="short_id is required")
+        return web.json_response({"error": "short_id is required"}, status=400)
 
     row = await get_user_by_short_id(short_id)
     if not row:
-        return web.Response(status=404, text="Link not found or expired")
+        return web.json_response({"error": "not found"}, status=404)
 
-    _, uuid_value, _, port, public_key, _, _, _ = row
+    _, uuid_value, email, port, public_key, expiry_time, _, _ = row
 
-    node = (
-        f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
-        f"?type=tcp&encryption=none&security=reality"
-        f"&pbk={public_key}&fp=chrome&sni=google.com"
-        f"&sid=32a221&spx=%2F#Trial"
-    )
+    node = {
+        "v": "2",
+        "ps": "Trial",
+        "add": FRONT_DOMAIN,
+        "port": str(port),
+        "id": uuid_value,
+        "aid": "0",
+        "net": "tcp",
+        "type": "none",
+        "host": "",
+        "path": "/",
+        "tls": "reality",
+        "sni": "google.com",
+        "fp": "chrome",
+        "pbk": public_key,
+        "sid": "32a221"
+    }
 
-    # subscription = одна строка, заканчивается \n
-    subscription_text = node + "\n"
-
-    # кодируем в base64
-    subscription_b64 = base64.b64encode(subscription_text.encode()).decode()
+    # subscription формат = base64(JSON array)
+    subscription_json = json.dumps([node])
+    subscription_b64 = base64.b64encode(subscription_json.encode()).decode()
 
     return web.Response(
         text=subscription_b64,
         content_type="text/plain",
-        charset="utf-8",
+        charset="utf-8"
     )
+
 
 
 # 🔹 Команда /start с меню
@@ -492,9 +502,9 @@ async def trial_button(message: types.Message):
         )
         return
 
-    # ✅ Собираем короткую ссылку для подписки (без IP)
+    # ✅ Собираем короткую ссылку для подписки (без IP, HTTP вместо HTTPS из-за невалидного сертификата)
     short_id = result["short_id"]
-    link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
+    link = f"http://{FRONT_DOMAIN}/sub/{short_id}"
 
     await message.answer(
         "✅ Пробная подписка создана!\n\n"
