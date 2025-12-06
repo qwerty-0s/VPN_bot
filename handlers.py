@@ -2,7 +2,7 @@
 from aiogram import F, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from xui_api import get_users, create_trial_inbound
-from config import VPN_DOMAIN
+from config import FRONT_DOMAIN
 
 # Главное меню
 main_menu = ReplyKeyboardMarkup(
@@ -90,21 +90,17 @@ def register_handlers(dp):
             )
             return
 
-        # ✅ Собираем ссылку для подключения
-        uuid = result["uuid"]
-        pbk = result["publicKey"]
-        port = result["port"]
-
-        link = (
-            f"vless://{uuid}@{VPN_DOMAIN}:{port}"
-            f"?encryption=none&security=reality&fp=chrome"
-            f"&pbk={pbk}&sid=32a221&sni=google.com#Trial"
-        )
+        # ✅ Собираем короткую ссылку для подписки (без IP, HTTP вместо HTTPS из-за невалидного сертификата)
+        short_id = result["short_id"]
+        link = f"http://{FRONT_DOMAIN}/sub/{short_id}"
 
         await message.answer(
             "✅ Пробная подписка создана!\n\n"
             "Срок действия: *3 дня*\n\n"
-            f"🔗 Ссылка для подключения:\n`{link}`",
+            "🔗 Ваша короткая ссылка на подписку (без IP):\n"
+            f"`{link}`\n\n"
+            "Эту ссылку можно сохранить и использовать позже. "
+            "Если IP сервера изменится, ссылка останется рабочей.",
             parse_mode="Markdown"
         )
 

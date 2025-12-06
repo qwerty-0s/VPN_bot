@@ -4,6 +4,7 @@ import aiohttp
 import json
 import uuid
 import random
+import secrets
 from datetime import datetime, timedelta
 from config import XUI_API, XUI_USER, XUI_PASS
 from database import user_exists, save_user
@@ -163,6 +164,8 @@ async def create_trial_inbound(telegram_id: int):
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
     email = f"trial_{int(datetime.now().timestamp())}"
+    # Короткий идентификатор для пользователя/подписки
+    short_id = secrets.token_urlsafe(6)
     port = await get_free_port()
     
     if not port:
@@ -251,12 +254,14 @@ async def create_trial_inbound(telegram_id: int):
                     email=email,
                     port=payload["port"],
                     public_key=public_key,
-                    expiry_time=expiry
+                    expiry_time=expiry,
+                    short_id=short_id,
                 )
                 return {
                     "uuid": client_uuid,
                     "publicKey": public_key,
-                    "port": payload["port"]
+                    "port": payload["port"],
+                    "short_id": short_id,
                 }
             return None
 

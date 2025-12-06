@@ -19,6 +19,9 @@ XUI_PASS = os.getenv("XUI_PASS")
 # VPN Server Configuration
 VPN_DOMAIN = os.getenv("VPN_DOMAIN")
 
+# Frontend Domain (для коротких ссылок без IP)
+FRONT_DOMAIN = os.getenv("FRONT_DOMAIN", "proxima-test.duckdns.org")
+
 # Database Configuration
 DB_PATH = os.getenv("DB_PATH", "vpn_bot.db")
 

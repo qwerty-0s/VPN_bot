@@ -7,6 +7,7 @@ from config import API_TOKEN, WEBHOOK_URL, WEBAPP_HOST, WEBAPP_PORT
 from database import init_db
 from xui_api import get_xui_cookie
 from handlers import register_handlers
+from web_routes import handle_short_sub
 
 # Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
@@ -37,6 +38,8 @@ def main():
     
     app = web.Application()
     SimpleRequestHandler(dp, bot).register(app, path="/webhook")
+    # HTTP-роут для коротких ссылок на подписку
+    app.router.add_get("/sub/{short_id}", handle_short_sub)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     setup_application(app, dp, bot=bot)

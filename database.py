@@ -16,9 +16,16 @@ async def init_db():
                 port INTEGER NOT NULL,
                 public_key TEXT NOT NULL,
                 expiry_time INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                short_id TEXT
             )
         """)
+        # Миграция для старых баз без столбца short_id
+        try:
+            await db.execute("ALTER TABLE trial_users ADD COLUMN short_id TEXT")
+        except Exception:
+            # Колонка уже существует или другая некритичная ошибка
+            pass
         await db.commit()
         logging.info("✅ База данных инициализирована")
 
@@ -39,18 +46,37 @@ async def user_exists(telegram_id: int) -> bool:
 
 
 async def save_user(telegram_id: int, uuid: str, email: str, port: int, 
-                   public_key: str, expiry_time: int):
+                   public_key: str, expiry_time: int, short_id: str):
     """Сохраняет данные пользователя в базу данных"""
     try:
         created_at = datetime.now().isoformat()
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("""
                 INSERT INTO trial_users 
-                (telegram_id, uuid, email, port, public_key, expiry_time, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (telegram_id, uuid, email, port, public_key, expiry_time, created_at))
+                (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id))
             await db.commit()
             logging.info(f"✅ Пользователь {telegram_id} сохранен в БД")
     except Exception as e:
         logging.error(f"❌ Ошибка при сохранении пользователя: {e}")
+
+
+async def get_user_by_short_id(short_id: str):
+    """
+    Возвращает запись пользователя по короткому идентификатору.
+    Возвращает кортеж: (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
+    """
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id "
+                "FROM trial_users WHERE short_id = ?",
+                (short_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row
+    except Exception as e:
+        logging.error(f"❌ Ошибка при поиске short_id={short_id}: {e}")
+        return None
 
