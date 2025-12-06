@@ -410,44 +410,39 @@ async def get_user_by_short_id(short_id: str):
 
 
 async def handle_short_sub(request: web.Request) -> web.Response:
+    """
+    HTTP-обработчик для коротких ссылок /sub/{short_id}.
+    Возвращает прямую vless:// ссылку в формате, который точно принимает v2rayNG.
+    Формат соответствует рабочей ссылке: type=tcp&encryption=none&security=reality&pbk=...&fp=chrome&sni=...&sid=...&spx=%2F
+    """
     short_id = request.match_info.get("short_id")
     if not short_id:
-        return web.json_response({"error": "short_id is required"}, status=400)
+        return web.Response(status=400, text="short_id is required")
 
     row = await get_user_by_short_id(short_id)
     if not row:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.Response(status=404, text="Link not found or expired")
 
-    _, uuid_value, email, port, public_key, expiry_time, _, _ = row
+    _, uuid_value, _, port, public_key, _, _, _ = row
 
-    node = {
-        "v": "2",
-        "ps": "Trial",
-        "add": FRONT_DOMAIN,
-        "port": str(port),
-        "id": uuid_value,
-        "aid": "0",
-        "net": "tcp",
-        "type": "none",
-        "host": "",
-        "path": "/",
-        "tls": "reality",
-        "sni": "google.com",
-        "fp": "chrome",
-        "pbk": public_key,
-        "sid": "32a221"
-    }
-
-    # subscription формат = base64(JSON array)
-    subscription_json = json.dumps([node])
-    subscription_b64 = base64.b64encode(subscription_json.encode()).decode()
-
-    return web.Response(
-        text=subscription_b64,
-        content_type="text/plain",
-        charset="utf-8"
+    # Формируем vless:// ссылку в точном формате, как рабочая ссылка
+    # Порядок параметров важен для совместимости с v2rayNG
+    # Формат: type=tcp&encryption=none&security=reality&pbk=...&fp=chrome&sni=...&sid=...&spx=%2F
+    vless_link = (
+        f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
+        f"?type=tcp&encryption=none&security=reality"
+        f"&pbk={public_key}&fp=chrome&sni=google.com"
+        f"&sid=32a221&spx=%2F#Trial"
     )
 
+    # Возвращаем прямую ссылку без base64
+    # Добавляем перенос строки в конце (стандарт subscription формата)
+    # v2rayNG принимает такой формат для импорта subscription
+    return web.Response(
+        text=vless_link + "\n",
+        content_type="text/plain",
+        charset="utf-8",
+    )
 
 
 # 🔹 Команда /start с меню
