@@ -3,7 +3,7 @@ import logging
 from aiohttp import web
 from database import get_user_by_short_id
 from config import FRONT_DOMAIN
-
+import base64
 
 async def handle_short_sub(request: web.Request) -> web.Response:
     """
@@ -43,8 +43,12 @@ async def handle_short_sub(request: web.Request) -> web.Response:
     # Возвращаем прямую ссылку без base64
     # Добавляем перенос строки в конце (стандарт subscription формата)
     # v2rayNG принимает такой формат для импорта subscription
+
+    payload = vless_link + "\n"
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
     return web.Response(
-        text=vless_link + "\n",
+        text=encoded,
         content_type="text/plain",
         charset="utf-8",
     )
