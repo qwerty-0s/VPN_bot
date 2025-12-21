@@ -3,7 +3,7 @@ import logging
 from aiohttp import web
 from database import get_user_by_short_id
 from config import FRONT_DOMAIN
-import base64
+
 
 async def handle_short_sub(request: web.Request) -> web.Response:
     """
@@ -27,28 +27,17 @@ async def handle_short_sub(request: web.Request) -> web.Response:
     # Формат: type=tcp&encryption=none&security=reality&pbk=...&fp=chrome&sni=...&sid=...&spx=%2F
     vless_link = (
         f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
-        f"?type=tcp"
-        f"&encryption=none"
-        f"&security=reality"
-        f"&flow=xtls-rprx-vision"
-        f"&pbk={public_key}"
-        f"&fp=chrome"
-        f"&sni=google.com"
-        f"&sid=32a221ff"
-        f"&headerType=none"
-        f"#ProximaTrial"
+        f"?type=tcp&encryption=none&security=reality"
+        f"&pbk={public_key}&fp=chrome&sni=google.com"
+        f"&sid=32a221&spx=%2F#Trial"
     )
-    
-    if "\n" in vless_link or "\r" in vless_link:
-        raise ValueError("VLESS link contains newline")
 
-
-    payload = vless_link + "\n"   # перенос ТОЛЬКО здесь
-    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-
+    # Возвращаем прямую ссылку без base64
+    # Добавляем перенос строки в конце (стандарт subscription формата)
+    # v2rayNG принимает такой формат для импорта subscription
     return web.Response(
-    text=encoded,
-    content_type="text/plain",
-    charset="utf-8",
+        text=vless_link + "\n",
+        content_type="text/plain",
+        charset="utf-8",
     )
 
