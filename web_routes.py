@@ -1,42 +1,59 @@
-"""HTTP-обработчики для веб-роутов бота"""
 import logging
+import aiohttp
+import base64
 from aiohttp import web
 from database import get_user_by_short_id
-from config import FRONT_DOMAIN
-
+# Предполагаем, что эти настройки в конфиге
+# XUI_SUB_URL = "http://109.234.34.215:2096/sub/" 
+from config import VPN_DOMAIN
+XUI_SUB_URL = f"http://{VPN_DOMAIN}:2096/sub/"
 
 async def handle_short_sub(request: web.Request) -> web.Response:
     """
-    HTTP-обработчик для коротких ссылок /sub/{short_id}.
-    Возвращает прямую vless:// ссылку в формате, который точно принимает v2rayNG.
-    Формат соответствует рабочей ссылке: type=tcp&encryption=none&security=reality&pbk=...&fp=chrome&sni=...&sid=...&spx=%2F
+    HTTP-обработчик, который проксирует запрос к подписке 3x-ui.
+    Пользователь обращается к боту, а бот забирает данные из панели.
     """
     short_id = request.match_info.get("short_id")
     if not short_id:
         return web.Response(status=400, text="short_id is required")
 
+    # 1. Получаем пользователя из вашей БД
     row = await get_user_by_short_id(short_id)
     if not row:
-        return web.Response(status=404, text="Link not found or expired")
+        return web.Response(status=404, text="User not found")
 
-    # row: (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
-    _, uuid_value, _, port, public_key, _, _, short_id_from_db = row
+    # В предыдущем коде вы создавали subId как "trial_" + email[-6:]
+    # Извлекаем email (3-й элемент в вашем кортеже row)
+    _, _, email, _, _, _, _, _ = row
+    sub_id = f"trial_{email[-6:]}" 
 
-    # Формируем vless:// ссылку в точном формате, как рабочая ссылка
-    # Порядок параметров важен для совместимости с v2rayNG
-    # Формат: type=tcp&encryption=none&security=reality&pbk=...&fp=chrome&sni=...&sid=...&spx=%2F
-    vless_link = (
-        f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
-        f"?type=tcp&encryption=none&security=reality"
-        f"&pbk={public_key}&fp=chrome&sni=google.com"
-        f"&sid={short_id_from_db}&spx=%2F#Trial"
-    )
+    # 2. Формируем прямой URL к подписке на панели 3x-ui
+    target_url = f"{XUI_SUB_URL}{sub_id}"
 
-    # Возвращаем прямую ссылку без base64
-    # Добавляем перенос строки в конце (стандарт subscription формата)
-    # v2rayNG принимает такой формат для импорта subscription
-    return web.Response(
-        text=vless_link + "\n",
-        content_type="text/plain",
-        charset="utf-8",
-    )
+    try:
+        # 3. Делаем запрос к панели
+        async with aiohttp.ClientSession() as session:
+            async with session.get(target_url, timeout=5) as resp:
+                if resp.status == 200:
+                    # Получаем содержимое (обычно это Base64 строка)
+                    content = await resp.text()
+                    
+                    # Возвращаем ответ в формате подписки
+                    return web.Response(
+                        text=content,
+                        content_type="text/plain",
+                        charset="utf-8",
+                        headers={
+                            "Subscription-Userinfo": resp.headers.get("Subscription-Userinfo", ""),
+                            "Profile-Update-Interval": "1"
+                        }
+                    )
+                elif resp.status == 404:
+                    logging.error(f"❌ Панель вернула 404 для sub_id: {sub_id}. Проверьте Settings -> Sub Settings.")
+                    return web.Response(status=404, text="Subscription not active in panel")
+                else:
+                    return web.Response(status=502, text="Panel error")
+                    
+    except Exception as e:
+        logging.error(f"❌ Ошибка при обращении к панели: {e}")
+        return web.Response(status=500, text="Internal server error")
