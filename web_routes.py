@@ -5,8 +5,8 @@ from aiohttp import web
 from database import get_user_by_short_id
 # Предполагаем, что эти настройки в конфиге
 # XUI_SUB_URL = "http://109.234.34.215:2096/sub/" 
-from config import VPN_DOMAIN
-XUI_SUB_URL = f"http://{VPN_DOMAIN}:2096/sub/"
+from config import FRONT_DOMAIN
+XUI_SUB_URL = f"http://{FRONT_DOMAIN}:2096/sub/"
 
 async def handle_short_sub(request: web.Request) -> web.Response:
     """

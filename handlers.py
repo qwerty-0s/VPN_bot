@@ -92,7 +92,7 @@ def register_handlers(dp):
 
         # ✅ Собираем короткую ссылку для подписки (без IP, HTTP вместо HTTPS из-за невалидного сертификата)
         short_id = result["short_id"]
-        link = f"http://{FRONT_DOMAIN}/sub/{short_id}"
+        link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
 
         await message.answer(
             "✅ Пробная подписка создана!\n\n"

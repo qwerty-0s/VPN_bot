@@ -214,7 +214,7 @@ async def create_trial_inbound(telegram_id: int):
                 "shortIds": [short_id],
                 "settings": {
                     "publicKey": public_key,
-                    "fingerprint": "chrome",
+                    "fingerprint": "firefox",
                     "spiderX": "/"
                 }
             },
