@@ -20,7 +20,7 @@ async def handle_short_sub(request: web.Request) -> web.Response:
         return web.Response(status=404, text="Link not found or expired")
 
     # row: (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
-    _, uuid_value, _, port, public_key, _, _, _ = row
+    _, uuid_value, _, port, public_key, _, _, short_id_from_db = row
 
     # Формируем vless:// ссылку в точном формате, как рабочая ссылка
     # Порядок параметров важен для совместимости с v2rayNG
@@ -29,7 +29,7 @@ async def handle_short_sub(request: web.Request) -> web.Response:
         f"vless://{uuid_value}@{FRONT_DOMAIN}:{port}"
         f"?type=tcp&encryption=none&security=reality"
         f"&pbk={public_key}&fp=chrome&sni=google.com"
-        f"&sid=32a221&spx=%2F#Trial"
+        f"&sid={short_id_from_db}&spx=%2F#Trial"
     )
 
     # Возвращаем прямую ссылку без base64
@@ -40,4 +40,3 @@ async def handle_short_sub(request: web.Request) -> web.Response:
         content_type="text/plain",
         charset="utf-8",
     )
-

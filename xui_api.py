@@ -163,9 +163,9 @@ async def create_trial_inbound(telegram_id: int):
 
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
-    email = f"trial_{int(datetime.now().timestamp())}"
+    email = str(telegram_id)
     # Короткий идентификатор для пользователя/подписки
-    short_id = secrets.token_urlsafe(6)
+    short_id = secrets.token_hex(3)
     port = await get_free_port()
     
     if not port:
@@ -211,7 +211,7 @@ async def create_trial_inbound(telegram_id: int):
                 "target": "google.com:443",
                 "serverNames": ["google.com", "www.google.com"],
                 "privateKey": private_key,
-                "shortIds": ["32a221", "2f835f2b62"],
+                "shortIds": [short_id],
                 "settings": {
                     "publicKey": public_key,
                     "fingerprint": "chrome",
@@ -264,4 +264,3 @@ async def create_trial_inbound(telegram_id: int):
                     "short_id": short_id,
                 }
             return None
-

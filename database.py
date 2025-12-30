@@ -80,3 +80,20 @@ async def get_user_by_short_id(short_id: str):
         logging.error(f"❌ Ошибка при поиске short_id={short_id}: {e}")
         return None
 
+async def  get_user_by_telegram_id(telegram_id: int):
+    """
+    Возвращает запись пользователя по telegram_id.
+    Возвращает кортеж: (telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id)
+    """
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT telegram_id, uuid, email, port, public_key, expiry_time, created_at, short_id "
+                "FROM trial_users WHERE telegram_id = ?",
+                (telegram_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row
+    except Exception as e:
+        logging.error(f"❌ Ошибка при поиске telegram_id={telegram_id}: {e}")
+        return None
