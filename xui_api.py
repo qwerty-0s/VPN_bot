@@ -247,15 +247,16 @@ async def create_trial_inbound(telegram_id: int):
             logging.info(f"📤 Ответ /inbounds/add: {text}")
             data = await resp.json(content_type=None)
             if data.get("success"):
-                # Сохраняем пользователя в базу данных
+                # Сохраняем пользователя в базу данных (новая структура)
                 await save_user(
                     telegram_id=telegram_id,
                     uuid=client_uuid,
                     email=email,
                     port=payload["port"],
-                    public_key=public_key,
                     expiry_time=expiry,
                     short_id=short_id,
+                    ip_limit=1,  # пробная подписка на 1 устройство
+                    is_active=True
                 )
                 return {
                     "uuid": client_uuid,
