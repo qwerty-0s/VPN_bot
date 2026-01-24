@@ -1,11 +1,9 @@
 import logging
 import aiohttp
-import base64
 from aiohttp import web
 from database import get_user_by_short_id
-# Предполагаем, что эти настройки в конфиге
-# XUI_SUB_URL = "http://109.234.34.215:2096/sub/" 
 from config import FRONT_DOMAIN
+
 XUI_SUB_URL = f"http://{FRONT_DOMAIN}:2096/sub/"
 
 async def handle_short_sub(request: web.Request) -> web.Response:
@@ -17,21 +15,20 @@ async def handle_short_sub(request: web.Request) -> web.Response:
     if not short_id:
         return web.Response(status=400, text="short_id is required")
 
-    # 1. Получаем пользователя из вашей БД
-    row = await get_user_by_short_id(short_id)
-    if not row:
+    # 1. Получаем пользователя из базы данных (новая структура)
+    user = await get_user_by_short_id(short_id)
+    if not user:
         return web.Response(status=404, text="User not found")
 
-    # В предыдущем коде вы создавали subId как "trial_" + email[-6:]
-    # Извлекаем email (3-й элемент в вашем кортеже row)
-    _, _, email, _, _, _, _, _ = row
+    # 2. Извлекаем email и формируем subId как в xui_api.py
+    email = user.get('email')
     sub_id = f"trial_{email[-6:]}" 
 
-    # 2. Формируем прямой URL к подписке на панели 3x-ui
+    # 3. Формируем прямой URL к подписке на панели 3x-ui
     target_url = f"{XUI_SUB_URL}{sub_id}"
 
     try:
-        # 3. Делаем запрос к панели
+        # 4. Делаем запрос к панели
         async with aiohttp.ClientSession() as session:
             async with session.get(target_url, timeout=5) as resp:
                 if resp.status == 200:
