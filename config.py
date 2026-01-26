@@ -25,6 +25,10 @@ FRONT_DOMAIN = os.getenv("FRONT_DOMAIN", "proxima-test.duckdns.org")
 # Database Configuration
 DB_PATH = os.getenv("DB_PATH", "vpn_bot.db")
 
+# YooKassa Payment Configuration
+YOO_SHOP_ID = os.getenv("YOO_SHOP_ID")
+YOO_SECRET_KEY = os.getenv("YOO_SECRET_KEY")
+
 # Tariff Matrix: (months, devices) -> price_in_rubles
 # Сетка тарифов: (месяцы, количество устройств) -> цена в рублях
 TARIFFS = {
