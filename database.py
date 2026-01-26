@@ -2,6 +2,7 @@
 import logging
 import aiosqlite
 import json
+import time
 from datetime import datetime
 from config import DB_PATH
 
@@ -248,7 +249,6 @@ async def get_users_expiring_soon(hours: int = 24):
         list of dicts с пользователями
     """
     try:
-        import time
         threshold = int(time.time() * 1000) + (hours * 3600 * 1000)
         
         async with aiosqlite.connect(DB_PATH) as db:
@@ -273,7 +273,6 @@ async def get_expired_users():
         list of dicts с пользователями
     """
     try:
-        import time
         now = int(time.time() * 1000)
         
         async with aiosqlite.connect(DB_PATH) as db:
