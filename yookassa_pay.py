@@ -37,9 +37,6 @@ async def create_payment_link(amount: int, description: str, metadata: dict) -> 
                 "value": amount / 100,  # Конвертируем копейки в рубли
                 "currency": "RUB"
             },
-            "payment_method_data": {
-                "type": "bank_card"
-            },
             "confirmation": {
                 "type": "redirect",
                 "return_url": "https://example.com"  # Будет отправлен пользователю

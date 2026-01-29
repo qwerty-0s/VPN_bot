@@ -33,19 +33,19 @@ YOO_SECRET_KEY = os.getenv("YOO_SECRET_KEY")
 # Сетка тарифов: (месяцы, количество устройств) -> цена в рублях
 TARIFFS = {
     # 1 месяц
-    (1, 1): {"price": 150, "days": 30, "devices": 1},
-    (1, 3): {"price": 200, "days": 30, "devices": 3},
-    (1, 5): {"price": 250, "days": 30, "devices": 5},
+    (1, 1): {"price": 99, "days": 30, "devices": 1},
+    (1, 3): {"price": 149, "days": 30, "devices": 3},
+    (1, 5): {"price": 199, "days": 30, "devices": 5},
     
     # 3 месяца
-    (3, 1): {"price": 400, "days": 90, "devices": 1},
-    (3, 3): {"price": 500, "days": 90, "devices": 3},
-    (3, 5): {"price": 600, "days": 90, "devices": 5},
+    (3, 1): {"price": 269, "days": 90, "devices": 1},
+    (3, 3): {"price": 399, "days": 90, "devices": 3},
+    (3, 5): {"price": 539, "days": 90, "devices": 5},
     
     # 6 месяцев
-    (6, 1): {"price": 700, "days": 180, "devices": 1},
-    (6, 3): {"price": 850, "days": 180, "devices": 3},
-    (6, 5): {"price": 1000, "days": 180, "devices": 5},
+    (6, 1): {"price": 469, "days": 180, "devices": 1},
+    (6, 3): {"price": 699, "days": 180, "devices": 3},
+    (6, 5): {"price": 939, "days": 180, "devices": 5},
 }
 
 # Проверка обязательных переменных
