@@ -5,9 +5,10 @@ import json
 import uuid
 import random
 import secrets
+import time
 from datetime import datetime, timedelta
 from config import XUI_API, XUI_USER, XUI_PASS
-from database import user_exists, save_user
+from database import user_exists, save_user, get_user  # Добавил get_user для получения UUID из БД
 
 # Глобальная переменная для cookie
 xui_cookie = None
@@ -24,15 +25,13 @@ async def get_xui_cookie():
                 ssl=False,
                 headers={"Content-Type": "application/json"}
             ) as resp:
-                text = await resp.text()
-                logging.info(f"Ответ /login: {text}")
-
-                # Получаем cookie вручную
+                # text = await resp.text() # Лог можно убрать для чистоты
+                
                 set_cookie = resp.headers.get("Set-Cookie")
                 if set_cookie:
-                    cookie_value = set_cookie.split(";")[0]  # только "3x-ui=...."
+                    cookie_value = set_cookie.split(";")[0]
                     xui_cookie = cookie_value
-                    logging.info(f"✅ Cookie сохранена: {xui_cookie}")
+                    logging.info(f"✅ Cookie обновлена")
                 else:
                     logging.error("❌ Сервер не вернул Set-Cookie!")
                     xui_cookie = None
@@ -41,63 +40,22 @@ async def get_xui_cookie():
         xui_cookie = None
 
 
-async def get_users():
-    """Получение списка пользователей из XUI панели"""
-    global xui_cookie
-    if not xui_cookie:
-        await get_xui_cookie()
-
-    headers = {
-        "Content-Type": "application/json",
-        "Cookie": xui_cookie
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{XUI_API}/panel/api/inbounds/list",
-                ssl=False,
-                headers=headers
-            ) as resp:
-                text = await resp.text()
-                logging.info(f"📥 Ответ /panel/api/inbounds/list: {text}")
-                try:
-                    data = await resp.json(content_type=None)
-                    return data
-                except Exception:
-                    return {"raw": text}
-    except Exception as e:
-        logging.error(f"❌ Ошибка при получении пользователей: {e}")
-        return None
-
-
 async def get_new_reality_keys():
     """Получение новых ключей для Reality"""
     global xui_cookie
     if not xui_cookie:
         await get_xui_cookie()
 
-    headers = {
-        "Content-Type": "application/json",
-        "Cookie": xui_cookie
-    }
-
+    headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{XUI_API}/panel/api/server/getNewX25519Cert",
-                headers=headers,
-                ssl=False
+                headers=headers, ssl=False
             ) as resp:
-                text = await resp.text()
-                logging.info(f"📥 Ответ getNewX25519Cert: {text}")
-                try:
-                    data = await resp.json(content_type=None)
-                    return data
-                except Exception:
-                    return {"raw": text}
+                return await resp.json(content_type=None)
     except Exception as e:
-        logging.error(f"❌ Ошибка при запросе Reality-ключей: {e}")
+        logging.error(f"❌ Ошибка ключей: {e}")
         return None
 
 
@@ -107,161 +65,253 @@ async def get_free_port():
     if not xui_cookie:
         await get_xui_cookie()
 
-    headers = {
-        "Content-Type": "application/json",
-        "Cookie": xui_cookie
-    }
-
+    headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{XUI_API}/panel/api/inbounds/list",
-                headers=headers,
-                ssl=False
+                headers=headers, ssl=False
             ) as resp:
                 data = await resp.json(content_type=None)
-
-                # собираем уже занятые порты
                 used_ports = {int(i["port"]) for i in data.get("obj", []) if "port" in i}
-
-                # ищем свободный порт в диапазоне
                 for _ in range(1000):
                     port = random.randint(10000, 65000)
                     if port not in used_ports:
                         return port
-
-                logging.error("❌ Не удалось найти свободный порт")
                 return None
-    except Exception as e:
-        logging.error(f"❌ Ошибка при получении свободного порта: {e}")
+    except Exception:
         return None
 
 
 async def create_trial_inbound(telegram_id: int):
-    """
-    Создает пробную подписку для пользователя.
-    Проверяет, не существует ли уже подписка для этого telegram_id.
-    """
+    """Создает подписку (клиента) в панели"""
     global xui_cookie
     
-    # Проверяем, существует ли уже пользователь
     if await user_exists(telegram_id):
-        logging.warning(f"⚠️ Пользователь {telegram_id} уже имеет пробную подписку")
         return {"error": "already_exists"}
     
     if not xui_cookie:
         await get_xui_cookie()
 
-    # Генерируем Reality ключи
     keys = await get_new_reality_keys()
     if not keys or "obj" not in keys:
-        logging.error("❌ Не удалось получить Reality ключи.")
         return None
 
     private_key = keys["obj"]["privateKey"]
     public_key = keys["obj"]["publicKey"]
 
+    # По умолчанию создаем на 3 дня (триал)
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
     email = str(telegram_id)
-    # Короткий идентификатор для пользователя/подписки
     short_id = secrets.token_hex(3)
     port = await get_free_port()
     
     if not port:
-        logging.error("❌ Не удалось найти свободный порт")
         return None
     
+    # Настройки JSON для inbound
+    settings = {
+        "clients": [{
+            "id": client_uuid,
+            "flow": "xtls-rprx-vision",
+            "email": email,
+            "limitIp": 1,
+            "totalGB": 0,
+            "expiryTime": expiry,
+            "enable": True,
+            "tgId": str(telegram_id),
+            "subId": short_id
+        }],
+        "decryption": "none",
+        "encryption": "none"
+    }
+
     payload = {
-        "up": 0,
-        "down": 0,
-        "total": 0,
+        "up": 0, "down": 0, "total": 0,
         "remark": email,
         "enable": True,
         "expiryTime": expiry,
         "listen": "",
         "port": port,  
         "protocol": "vless",
-        "settings": json.dumps({
-            "clients": [
-                {
-                    "id": client_uuid,
-                    "flow": "",
-                    "email": email,
-                    "limitIp": 0,
-                    "totalGB": 0,
-                    "expiryTime": expiry,
-                    "enable": True,
-                    "tgId": "",
-                    "subId": "trial_" + email[-6:],
-                    "comment": "",
-                    "reset": 0
-                }
-            ],
-            "decryption": "none",
-            "encryption": "none"
-        }),
+        "settings": json.dumps(settings),
         "streamSettings": json.dumps({
             "network": "tcp",
             "security": "reality",
             "externalProxy": [],
             "realitySettings": {
-                "show": False,
-                "xver": 0,
+                "show": False, "xver": 0,
                 "target": "google.com:443",
                 "serverNames": ["google.com", "www.google.com"],
                 "privateKey": private_key,
                 "shortIds": [short_id],
-                "settings": {
-                    "publicKey": public_key,
-                    "fingerprint": "firefox",
-                    "spiderX": "/"
-                }
+                "settings": {"publicKey": public_key, "fingerprint": "firefox", "spiderX": "/"}
             },
-            "tcpSettings": {
-                "acceptProxyProtocol": False,
-                "header": {"type": "none"}
-            }
+            "tcpSettings": {"header": {"type": "none"}}
         }),
-        "sniffing": json.dumps({
-            "enabled": False,
-            "destOverride": ["http", "tls", "quic", "fakedns"],
-            "metadataOnly": False,
-            "routeOnly": False
-        })
+        "sniffing": json.dumps({"enabled": True, "destOverride": ["http", "tls"]})
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "Cookie": xui_cookie
-    }
+    headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{XUI_API}/panel/api/inbounds/add",
-            headers=headers,
-            json=payload,
-            ssl=False
+            headers=headers, json=payload, ssl=False
         ) as resp:
-            text = await resp.text()
-            logging.info(f"📤 Ответ /inbounds/add: {text}")
             data = await resp.json(content_type=None)
             if data.get("success"):
-                # Сохраняем пользователя в базу данных (новая структура)
                 await save_user(
                     telegram_id=telegram_id,
                     uuid=client_uuid,
                     email=email,
-                    port=payload["port"],
+                    port=port,
                     expiry_time=expiry,
                     short_id=short_id,
-                    ip_limit=1,  # пробная подписка на 1 устройство
+                    ip_limit=1,
                     is_active=True
                 )
                 return {
                     "uuid": client_uuid,
                     "publicKey": public_key,
-                    "port": payload["port"],
+                    "port": port,
                     "short_id": short_id,
+                    "server": data.get("obj", {}).get("listen", "") # Если сервер вернет IP
                 }
             return None
+
+
+async def get_client_stats(email: str):
+    """Получает данные клиента по email"""
+    global xui_cookie
+    if not xui_cookie:
+        await get_xui_cookie()
+    
+    headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{XUI_API}/panel/api/inbounds/getClientTraffics/{email}",
+                headers=headers, ssl=False
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if data.get("success") and data.get("obj"):
+                    return data["obj"]
+                return None
+    except Exception as e:
+        logging.error(f"Error getting stats: {e}")
+        return None
+
+
+async def update_client_subscription(email: str, added_days: int, new_ip_limit: int) -> bool:
+    """
+    Продлевает подписку клиента.
+    Для корректной работы нам нужен UUID клиента. 
+    Мы можем взять его из базы данных или найти через API, если метод getClientTraffics его не вернет.
+    """
+    global xui_cookie
+    if not xui_cookie:
+        await get_xui_cookie()
+
+    headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
+
+    try:
+        # 1. Получаем текущие данные (прежде всего expiryTime)
+        stats = await get_client_stats(email)
+        current_expiry = 0
+        
+        if stats:
+             # stats может быть списком или словарем в зависимости от версии панели
+             if isinstance(stats, list):
+                 current_expiry = stats[0].get("expiryTime", 0)
+             else:
+                 current_expiry = stats.get("expiryTime", 0)
+        
+        # 2. Считаем новое время
+        now = int(time.time() * 1000)
+        
+        # Если подписка активна (время в будущем) -> добавляем к текущему сроку
+        if current_expiry > now:
+            new_expiry = current_expiry + (added_days * 86400000)
+        else:
+            # Если истекла или никогда не была активна -> добавляем к "сейчас"
+            new_expiry = now + (added_days * 86400000)
+
+        # 3. Для обновления в 3x-ui чаще всего нужен UUID клиента в URL
+        # Попробуем найти UUID в базе данных по email (который равен telegram_id)
+        user_data = await get_user(int(email))
+        if not user_data:
+            logging.error(f"❌ Пользователь {email} не найден в БД при обновлении")
+            return False
+            
+        client_uuid = user_data["uuid"]
+
+        # 4. Отправляем запрос на обновление
+        # ВАЖНО: 3x-ui обычно использует endpoint /updateClient/{uuid}
+        payload = {
+            "expiryTime": new_expiry,
+            "limitIp": int(new_ip_limit),
+            "enable": True,
+            "email": email,
+            "id": client_uuid
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{XUI_API}/panel/api/inbounds/updateClient/{client_uuid}",
+                headers=headers,
+                json=payload,
+                ssl=False
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if data.get("success"):
+                    logging.info(f"✅ Подписка продлена для {email}. Новая дата: {datetime.fromtimestamp(new_expiry/1000)}")
+                    return True
+                else:
+                    logging.error(f"❌ Ошибка API при обновлении: {data}")
+                    return False
+
+    except Exception as e:
+        logging.error(f"❌ Критическая ошибка update_client_subscription: {e}")
+        return False
+
+
+async def enable_client(email: str) -> bool:
+    """Включает клиента (enable: true)"""
+    # Логика упрощена: делаем update с текущим временем, просто меняя флаг
+    # Но проще всего передать те же параметры, что есть, но enable=true
+    # Здесь мы используем трюк: вызываем update с 0 дней добавления, но жестко ставим enable=True внутри update
+    return await update_client_subscription(email, 0, 0) # 0 дней не меняют дату, если она в будущем
+
+
+async def disable_client(email: str) -> bool:
+    """Отключает клиента (enable: false)"""
+    global xui_cookie
+    if not xui_cookie:
+        await get_xui_cookie()
+        
+    user_data = await get_user(int(email))
+    if not user_data:
+        return False
+    
+    client_uuid = user_data["uuid"]
+    headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
+    
+    payload = {
+        "id": client_uuid,
+        "email": email,
+        "enable": False
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{XUI_API}/panel/api/inbounds/updateClient/{client_uuid}",
+                headers=headers, json=payload, ssl=False
+            ) as resp:
+                data = await resp.json(content_type=None)
+                return data.get("success", False)
+    except Exception as e:
+        logging.error(f"Disable error: {e}")
+        return False
