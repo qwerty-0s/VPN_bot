@@ -1,13 +1,17 @@
 """Модуль для работы с платежной системой ЮKassa"""
 import logging
-from yookassa import Configuration, Payment
+import aiohttp
+import base64
+import json
 from uuid import uuid4
 from config import YOO_SHOP_ID, YOO_SECRET_KEY
 
 
-# Конфигурация ЮKassa
-Configuration.account_id = YOO_SHOP_ID
-Configuration.secret_key = YOO_SECRET_KEY
+async def _get_auth_header() -> str:
+    """Генерирует Basic Auth header для ЮKassa"""
+    credentials = f"{YOO_SHOP_ID}:{YOO_SECRET_KEY}"
+    encoded = base64.b64encode(credentials.encode()).decode()
+    return f"Basic {encoded}"
 
 
 async def create_payment_link(amount: int, description: str, metadata: dict) -> tuple:
@@ -21,37 +25,50 @@ async def create_payment_link(amount: int, description: str, metadata: dict) -> 
     
     Returns:
         tuple: (payment_url, payment_id) или (None, None) в случае ошибки
-    
-    Example:
-        >>> url, payment_id = await create_payment_link(15000, "1 мес / 1 устр", {"telegram_id": 123})
-        >>> # url: https://yookassa.ru/checkout/....
-        >>> # payment_id: "abc123def456"
     """
     try:
-        # Генерируем уникальный ID для идемпотентности
         idempotence_key = str(uuid4())
+        auth_header = await _get_auth_header()
         
-        # Создаем платеж через SDK ЮKassa
-        payment = Payment.create({
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json",
+            "Idempotence-Key": idempotence_key
+        }
+        
+        payload = {
             "amount": {
-                "value": amount / 100,  # Конвертируем копейки в рубли
+                "value": f"{amount / 100:.2f}",
                 "currency": "RUB"
             },
             "confirmation": {
                 "type": "redirect",
-                "return_url": "https://example.com"  # Будет отправлен пользователю
+                "return_url": "https://example.com"
             },
             "description": description,
             "metadata": metadata,
-            "save_payment_method": False
-        }, idempotence_key)
+            "capture": True
+        }
         
-        payment_id = payment.id
-        payment_url = payment.confirmation.confirmation_url
-        
-        logging.info(f"✅ Платеж создан: {payment_id}, сумма: {amount} коп., ссылка: {payment_url}")
-        
-        return payment_url, payment_id
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.yookassa.ru/v3/payments",
+                headers=headers,
+                json=payload,
+                ssl=True
+            ) as resp:
+                response_data = await resp.json()
+                
+                if resp.status == 200:
+                    payment_id = response_data.get("id")
+                    confirmation = response_data.get("confirmation", {})
+                    payment_url = confirmation.get("confirmation_url")
+                    
+                    logging.info(f"✅ Платеж создан: {payment_id}, сумма: {amount} коп.")
+                    return payment_url, payment_id
+                else:
+                    logging.error(f"❌ Ошибка при создании платежа: {response_data}")
+                    return None, None
         
     except Exception as e:
         logging.error(f"❌ Ошибка при создании платежа: {e}")
@@ -66,29 +83,40 @@ async def check_payment_status(payment_id: str) -> dict:
         payment_id: ID платежа в системе ЮKassa
     
     Returns:
-        dict с информацией о платеже:
-        {
-            "status": "succeeded" | "pending" | "canceled",
-            "amount": 15000,
-            "metadata": {...}
-        }
-        или None в случае ошибки
+        dict с информацией о платеже или None при ошибке
     """
     try:
-        payment = Payment.find_one(payment_id)
+        auth_header = await _get_auth_header()
         
-        status = payment.status
-        amount = int(payment.amount.value * 100)  # Конвертируем в копейки
-        metadata = payment.metadata if hasattr(payment, 'metadata') else {}
-        
-        logging.info(f"✅ Статус платежа {payment_id}: {status}")
-        
-        return {
-            "status": status,
-            "amount": amount,
-            "metadata": metadata,
-            "payment_method": payment.payment_method.type if hasattr(payment, 'payment_method') else None
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json"
         }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.yookassa.ru/v3/payments/{payment_id}",
+                headers=headers,
+                ssl=True
+            ) as resp:
+                response_data = await resp.json()
+                
+                if resp.status == 200:
+                    status = response_data.get("status")
+                    amount = response_data.get("amount", {})
+                    metadata = response_data.get("metadata", {})
+                    
+                    logging.info(f"✅ Статус платежа {payment_id}: {status}")
+                    
+                    return {
+                        "status": status,
+                        "amount": int(float(amount.get("value", 0)) * 100),
+                        "metadata": metadata,
+                        "payment_method": response_data.get("payment_method", {}).get("type")
+                    }
+                else:
+                    logging.error(f"❌ Не удалось получить статус платежа: {response_data}")
+                    return None
         
     except Exception as e:
         logging.error(f"❌ Ошибка при проверке статуса платежа: {e}")
@@ -103,25 +131,37 @@ async def get_payment_info(payment_id: str):
         payment_id: ID платежа в системе ЮKassa
     
     Returns:
-        dict с информацией о платеже
+        dict с информацией о платеже или None при ошибке
     """
     try:
-        payment = Payment.find_one(payment_id)
+        auth_header = await _get_auth_header()
         
-        return {
-            "id": payment.id,
-            "status": payment.status,
-            "amount": {
-                "value": payment.amount.value,
-                "currency": payment.amount.currency
-            },
-            "description": payment.description if hasattr(payment, 'description') else None,
-            "metadata": payment.metadata if hasattr(payment, 'metadata') else {},
-            "created_at": str(payment.created_at) if hasattr(payment, 'created_at') else None,
-            "payment_method": {
-                "type": payment.payment_method.type if hasattr(payment, 'payment_method') else None
-            }
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json"
         }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.yookassa.ru/v3/payments/{payment_id}",
+                headers=headers,
+                ssl=True
+            ) as resp:
+                response_data = await resp.json()
+                
+                if resp.status == 200:
+                    return {
+                        "id": response_data.get("id"),
+                        "status": response_data.get("status"),
+                        "amount": response_data.get("amount"),
+                        "description": response_data.get("description"),
+                        "metadata": response_data.get("metadata"),
+                        "created_at": response_data.get("created_at"),
+                        "payment_method": response_data.get("payment_method")
+                    }
+                else:
+                    logging.error(f"❌ Ошибка при получении информации о платеже: {response_data}")
+                    return None
         
     except Exception as e:
         logging.error(f"❌ Ошибка при получении информации о платеже: {e}")
