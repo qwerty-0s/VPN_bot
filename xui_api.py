@@ -8,7 +8,7 @@ import secrets
 import time
 from datetime import datetime, timedelta
 from config import XUI_API, XUI_USER, XUI_PASS
-from database import user_exists, save_user
+from database import user_exists, save_user, get_user_by_telegram_id
 
 # Глобальная переменная для cookie
 xui_cookie = None
@@ -240,7 +240,7 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 
         # 3. Для обновления в 3x-ui чаще всего нужен UUID клиента в URL
         # Попробуем найти UUID в базе данных по email (который равен telegram_id)
-        user_data = await get_user_by(int(email))
+        user_data = await get_user_by_telegram_id(int(email))
         if not user_data:
             logging.error(f"❌ Пользователь {email} не найден в БД при обновлении")
             return False
@@ -291,7 +291,7 @@ async def disable_client(email: str) -> bool:
     if not xui_cookie:
         await get_xui_cookie()
         
-    user_data = await get_user(int(email))
+    user_data = await get_user_by_telegram_id(int(email))
     if not user_data:
         return False
     
