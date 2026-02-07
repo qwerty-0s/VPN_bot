@@ -72,20 +72,23 @@ def register_handlers(dp):
     async def trial_button(message: types.Message):
         telegram_id = message.from_user.id
         
-        result = await create_trial_inbound(telegram_id)
+        # Проверяем, есть ли уже подписка
+        user = await get_user_by_telegram_id(telegram_id)
         
-        if not result:
-            await message.answer("❌ Не удалось создать пробную подписку.")
-            logging.error(f"❌ Ошибка создания пробной подписки для {telegram_id}")
+        if user:
+            await message.answer(
+                "⚠️ У вас уже есть подписка!\n\n"
+                "Для создания новой пробной подписки свяжитесь с техподдержкой."
+            )
+            logging.warning(f"⚠️ Пользователь {telegram_id} попытался создать подписку, но она уже существует")
             return
         
-        if result.get("error") == "already_exists":
-            await message.answer(
-                "⚠️ У вас уже есть пробная подписка!\n\n"
-                "Один пользователь может создать только одну пробную подписку.\n\n"
-                "Для продления подписки выберите платный тариф в меню 💎 Купить подписку"
-            )
-            logging.warning(f"⚠️ Пользователь {telegram_id} попытался создать вторую пробную подписку")
+        # Создаем пробную подписку (3 дня)
+        result = await create_trial_inbound(telegram_id)
+        
+        if not result or result.get("error"):
+            await message.answer("❌ Не удалось создать пробную подписку.")
+            logging.error(f"❌ Ошибка создания пробной подписки для {telegram_id}")
             return
 
         short_id = result["short_id"]
@@ -269,64 +272,106 @@ def register_handlers(dp):
             added_days = int(metadata.get('days', 0))
             devices = int(metadata.get('devices', 1))
 
-            # Получаем email пользователя из БД по telegram_id
+            # Получаем пользователя из БД по telegram_id
             try:
                 user = await get_user_by_telegram_id(telegram_id)
             except Exception as e:
                 user = None
                 logging.error(f"❌ Ошибка при получении пользователя {telegram_id} из БД: {e}")
 
+            # ВАЖНО: Если это первая покупка (пользователя нет в БД), создаем подписку
             if not user:
-                # Платеж принят, но нет записи пользователя для обновления XUI
+                # Первая покупка — создаем подписку + бонус 3 дня
+                total_days = added_days + 3
+                
                 await callback.message.edit_text(
-                    "✅ Платеж принят, но не удалось найти вашу запись в базе для активации подписки.\n\n"
-                    "Пожалуйста, свяжитесь с техподдержкой для ручной активации.",
-                    parse_mode="Markdown"
+                    "⏳ Создаю вашу подписку..."
                 )
-                logging.error(f"❌ Платеж {payment_id} получен, но отсутствует пользователь {telegram_id} в БД")
-                return
+                
+                trial_result = await create_trial_inbound(telegram_id)
+                
+                if not trial_result or trial_result.get("error"):
+                    await callback.message.edit_text(
+                        "❌ Платеж принят, но не удалось создать подписку.\n\n"
+                        "Пожалуйста, свяжитесь с техподдержкой для ручной активации."
+                    )
+                    logging.error(f"❌ Не удалось создать подписку для {telegram_id}")
+                    return
+                
+                # Получаем свежие данные пользователя
+                user = await get_user_by_telegram_id(telegram_id)
+                if not user:
+                    logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания")
+                    return
+                
+                # Обновляем подписку с купленными днями + 3 дня бонуса
+                email = user.get('email')
+                try:
+                    success = await update_client_subscription(email=email, added_days=total_days, new_ip_limit=devices)
+                except Exception as e:
+                    success = False
+                    logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
+                
+                if not success:
+                    await callback.message.edit_text(
+                        "⚠️ Подписка создана, но не удалось применить купленные дни.\n\n"
+                        "Свяжитесь с техподдержкой."
+                    )
+                    return
+                
+                logging.info(f"✅ Первая покупка обработана для {telegram_id}: создана подписка на {total_days} дней (+ 3 дня бонуса)")
+            
+            else:
+                # Это повторная покупка — просто продлеваем подписку
+                email = user.get('email')
+                
+                try:
+                    success = await update_client_subscription(email=email, added_days=added_days, new_ip_limit=devices)
+                except Exception as e:
+                    success = False
+                    logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
+                
+                if not success:
+                    await callback.message.edit_text(
+                        "❌ Платеж принят, но не удалось продлить подписку.\n\n"
+                        "Пожалуйста, свяжитесь с техподдержкой."
+                    )
+                    logging.error(f"❌ Ошибка обновления подписки для {telegram_id}")
+                    return
+                
+                logging.info(f"✅ Подписка продлена для {telegram_id} на {added_days} дней")
 
-            email = user.get('email')
+            # Отправляем финальное сообщение, инструкцию и ключ доступа
+            await callback.message.edit_text(
+                "✅ Оплата прошла успешно! Подписка активирована/продлена.",
+                parse_mode="Markdown"
+            )
 
-            # Обновляем подписку в XUI
+            # Отправляем инструкцию в виде изображения, если есть
             try:
-                success = await update_client_subscription(email=email, added_days=added_days, new_ip_limit=devices)
+                instr_path = 'instruction.jpg'
+                if os.path.exists(instr_path):
+                    await callback.message.answer_photo(types.FSInputFile(instr_path), caption="Инструкция по подключению")
             except Exception as e:
-                success = False
-                logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
+                logging.warning(f"⚠️ Не удалось отправить instruction.jpg: {e}")
 
-            if success:
-                # Отправляем финальное сообщение, инструкцию и ключ доступа
-                await callback.message.edit_text(
-                    "✅ Оплата прошла успешно! Подписка продлена/активирована.",
-                    parse_mode="Markdown"
-                )
+            # Отправляем пользовательское соглашение в формате PDF если есть, иначе TXT
+            try:
+                pdf_path = 'user_agreement.pdf'
+                txt_path = 'user_agreement.txt'
+                if os.path.exists(pdf_path):
+                    await callback.message.answer_document(types.FSInputFile(pdf_path), caption="Пользовательское соглашение")
+                elif os.path.exists(txt_path):
+                    await callback.message.answer_document(types.FSInputFile(txt_path), caption="Пользовательское соглашение")
+            except Exception as e:
+                logging.warning(f"⚠️ Не удалось отправить пользовательское соглашение: {e}")
 
-                # Отправляем инструкцию в виде изображения, если есть
-                try:
-                    instr_path = 'instruction.jpg'
-                    if os.path.exists(instr_path):
-                        await callback.message.answer_photo(types.FSInputFile(instr_path), caption="Инструкция по подключению")
-                except Exception as e:
-                    logging.warning(f"⚠️ Не удалось отправить instruction.jpg: {e}")
-
-                # Отправляем пользовательское соглашение в формате PDF если есть, иначе TXT
-                try:
-                    pdf_path = 'user_agreement.pdf'
-                    txt_path = 'user_agreement.txt'
-                    if os.path.exists(pdf_path):
-                        await callback.message.answer_document(types.FSInputFile(pdf_path), caption="Пользовательское соглашение")
-                    elif os.path.exists(txt_path):
-                        await callback.message.answer_document(types.FSInputFile(txt_path), caption="Пользовательское соглашение")
-                except Exception as e:
-                    logging.warning(f"⚠️ Не удалось отправить пользовательское соглашение: {e}")
-
-                # Отправляем ключ доступа и порт
-                try:
-                    key_text = f"🔑 Ваш ключ: {user.get('uuid')}\n🔌 Порт: {user.get('port')}"
-                    await callback.message.answer(key_text)
-                except Exception as e:
-                    logging.error(f"❌ Ошибка при отправке ключа пользователю {telegram_id}: {e}")
+            # Отправляем ключ доступа и порт
+            try:
+                key_text = f"🔑 Ваш ключ: {user.get('uuid')}\n🔌 Порт: {user.get('port')}"
+                await callback.message.answer(key_text)
+            except Exception as e:
+                logging.error(f"❌ Ошибка при отправке ключа пользователю {telegram_id}: {e}")
 
                 logging.info(f"✅ Платеж {payment_id} успешно принят и подписка обновлена для {telegram_id}")
             else:
