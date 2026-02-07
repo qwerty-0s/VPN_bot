@@ -162,6 +162,11 @@ async def create_trial_inbound(telegram_id: int):
         ) as resp:
             data = await resp.json(content_type=None)
             if data.get("success"):
+                # Получаем inbound_id из ответа API (обычно в obj.id)
+                inbound_id = None
+                if data.get("obj") and isinstance(data["obj"], dict):
+                    inbound_id = data["obj"].get("id")
+                
                 await save_user(
                     telegram_id=telegram_id,
                     uuid=client_uuid,
@@ -170,13 +175,15 @@ async def create_trial_inbound(telegram_id: int):
                     expiry_time=expiry,
                     short_id=short_id,
                     ip_limit=1,
-                    is_active=True
+                    is_active=True,
+                    inbound_id=inbound_id
                 )
                 return {
                     "uuid": client_uuid,
                     "publicKey": public_key,
                     "port": port,
                     "short_id": short_id,
+                    "inbound_id": inbound_id,
                     "server": data.get("obj", {}).get("listen", "") # Если сервер вернет IP
                 }
             return None
@@ -238,28 +245,32 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
             # Если истекла или никогда не была активна -> добавляем к "сейчас"
             new_expiry = now + (added_days * 86400000)
 
-        # 3. Для обновления в 3x-ui чаще всего нужен UUID клиента в URL
-        # Попробуем найти UUID в базе данных по email (который равен telegram_id)
+        # 3. Получаем inbound_id из базы данных по email (который равен telegram_id)
         user_data = await get_user_by_telegram_id(int(email))
         if not user_data:
             logging.error(f"❌ Пользователь {email} не найден в БД при обновлении")
             return False
             
-        client_uuid = user_data["uuid"]
+        inbound_id = user_data.get("inbound_id")
+        client_uuid = user_data.get("uuid")
+        
+        if not inbound_id:
+            logging.error(f"❌ inbound_id не найден для пользователя {email}")
+            return False
 
         # 4. Отправляем запрос на обновление
-        # ВАЖНО: 3x-ui обычно использует endpoint /updateClient/{uuid}
+        # API ожидает id как integer (ID inbound'а), а не UUID
         payload = {
+            "id": inbound_id,
             "expiryTime": new_expiry,
             "limitIp": int(new_ip_limit),
             "enable": True,
-            "email": email,
-            "id": client_uuid
+            "email": email
         }
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{XUI_API}/panel/api/inbounds/updateClient/{client_uuid}",
+                f"{XUI_API}/panel/api/inbounds/update",
                 headers=headers,
                 json=payload,
                 ssl=False
@@ -295,11 +306,15 @@ async def disable_client(email: str) -> bool:
     if not user_data:
         return False
     
-    client_uuid = user_data["uuid"]
+    inbound_id = user_data.get("inbound_id")
     headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
     
+    if not inbound_id:
+        logging.error(f"❌ inbound_id не найден для отключения клиента {email}")
+        return False
+    
     payload = {
-        "id": client_uuid,
+        "id": inbound_id,
         "email": email,
         "enable": False
     }
@@ -307,7 +322,7 @@ async def disable_client(email: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{XUI_API}/panel/api/inbounds/updateClient/{client_uuid}",
+                f"{XUI_API}/panel/api/inbounds/update",
                 headers=headers, json=payload, ssl=False
             ) as resp:
                 data = await resp.json(content_type=None)

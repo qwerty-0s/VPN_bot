@@ -25,10 +25,17 @@ async def init_db():
                 short_id TEXT UNIQUE NOT NULL,
                 is_active BOOLEAN DEFAULT 1,
                 warning_sent BOOLEAN DEFAULT 0,
+                inbound_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+        
+        # Миграция: добавляем inbound_id если таблица уже существовала
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN inbound_id INTEGER")
+        except Exception:
+            pass  # Колонка уже существует
         
         # Таблица payments для отслеживания платежей
         await db.execute("""
@@ -84,7 +91,7 @@ async def user_exists(telegram_id: int) -> bool:
 
 async def save_user(telegram_id: int, uuid: str, email: str, port: int,
                    expiry_time: int, short_id: str, ip_limit: int = 1,
-                   is_active: bool = True):
+                   is_active: bool = True, inbound_id: int = None):
     """
     Сохраняет или обновляет данные пользователя в базу данных.
     
@@ -97,6 +104,7 @@ async def save_user(telegram_id: int, uuid: str, email: str, port: int,
         short_id: Короткий идентификатор подписки
         ip_limit: Лимит устройств (по умолчанию 1 для пробных)
         is_active: Активна ли подписка (по умолчанию True)
+        inbound_id: ID inbound'а в XUI панели (для обновления подписки)
     """
     try:
         now = datetime.now().isoformat()
@@ -105,10 +113,10 @@ async def save_user(telegram_id: int, uuid: str, email: str, port: int,
             await db.execute("""
                 INSERT OR REPLACE INTO users
                 (telegram_id, uuid, email, port, expiry_time, ip_limit, short_id, 
-                 is_active, warning_sent, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                 is_active, warning_sent, inbound_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             """, (telegram_id, uuid, email, port, expiry_time, ip_limit, 
-                  short_id, is_active, now, now))
+                  short_id, is_active, inbound_id, now, now))
             await db.commit()
             logging.info(f"✅ Пользователь {telegram_id} сохранен в БД")
     except Exception as e:
