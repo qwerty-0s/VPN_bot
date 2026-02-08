@@ -295,28 +295,40 @@ def register_handlers(dp):
                         "❌ Платеж принят, но не удалось создать подписку.\n\n"
                         "Пожалуйста, свяжитесь с техподдержкой для ручной активации."
                     )
-                    logging.error(f"❌ Не удалось создать подписку для {telegram_id}")
+                    logging.error(f"❌ Не удалось создать подписку для {telegram_id}, результат: {trial_result}")
                     return
                 
-                # Получаем свежие данные пользователя
+                logging.info(f"✅ Подписка создана для {telegram_id}, inbound_id: {trial_result.get('inbound_id')}")
+                
+                # Получаем свежие данные пользователя из БД
+                import asyncio
+                await asyncio.sleep(0.5)  # Небольшая задержка для синхронизации БД
+                
                 user = await get_user_by_telegram_id(telegram_id)
                 if not user:
-                    logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания")
+                    logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания. Проверьте БД.")
+                    await callback.message.edit_text(
+                        "❌ Ошибка при получении данных из базы. Свяжитесь с техподдержкой."
+                    )
                     return
+                
+                logging.info(f"✅ Данные пользователя получены: telegram_id={telegram_id}, email={user.get('email')}, inbound_id={user.get('inbound_id')}")
                 
                 # Обновляем подписку с купленными днями + 3 дня бонуса
                 email = user.get('email')
                 try:
+                    logging.info(f"📝 Обновляю подписку: email={email}, added_days={total_days}, devices={devices}")
                     success = await update_client_subscription(email=email, added_days=total_days, new_ip_limit=devices)
                 except Exception as e:
                     success = False
-                    logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
+                    logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}", exc_info=True)
                 
                 if not success:
                     await callback.message.edit_text(
                         "⚠️ Подписка создана, но не удалось применить купленные дни.\n\n"
                         "Свяжитесь с техподдержкой."
                     )
+                    logging.error(f"❌ Не удалось обновить подписку для {telegram_id}")
                     return
                 
                 logging.info(f"✅ Первая покупка обработана для {telegram_id}: создана подписка на {total_days} дней (+ 3 дня бонуса)")

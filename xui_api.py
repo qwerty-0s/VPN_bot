@@ -230,10 +230,14 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
         
         if stats:
              # stats может быть списком или словарем в зависимости от версии панели
-             if isinstance(stats, list):
-                 current_expiry = stats[0].get("expiryTime", 0)
-             else:
-                 current_expiry = stats.get("expiryTime", 0)
+             try:
+                 if isinstance(stats, list) and len(stats) > 0:
+                     current_expiry = stats[0].get("expiryTime", 0) if stats[0] else 0
+                 elif isinstance(stats, dict):
+                     current_expiry = stats.get("expiryTime", 0)
+             except (IndexError, AttributeError, TypeError) as e:
+                 logging.warning(f"⚠️ Ошибка при разборе stats для {email}: {e}")
+                 current_expiry = 0
         
         # 2. Считаем новое время
         now = int(time.time() * 1000)
@@ -250,9 +254,14 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
         if not user_data:
             logging.error(f"❌ Пользователь {email} не найден в БД при обновлении")
             return False
+        
+        # Защита от None
+        if user_data is None:
+            logging.error(f"❌ user_data is None для {email}")
+            return False
             
-        inbound_id = user_data.get("inbound_id")
-        client_uuid = user_data.get("uuid")
+        inbound_id = user_data.get("inbound_id") if user_data else None
+        client_uuid = user_data.get("uuid") if user_data else None
         
         if not inbound_id:
             logging.error(f"❌ inbound_id не найден для пользователя {email}")
