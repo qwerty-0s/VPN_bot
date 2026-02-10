@@ -353,7 +353,7 @@ def register_handlers(dp):
                 
                 logging.info(f"✅ Подписка продлена для {telegram_id} на {added_days} дней")
 
-            # Отправляем финальное сообщение, инструкцию и ключ доступа
+            # Отправляем финальное сообщение, инструкцию и ссылку подписки
             await callback.message.edit_text(
                 "✅ Оплата прошла успешно! Подписка активирована/продлена.",
                 parse_mode="Markdown"
@@ -378,22 +378,25 @@ def register_handlers(dp):
             except Exception as e:
                 logging.warning(f"⚠️ Не удалось отправить пользовательское соглашение: {e}")
 
-            # Отправляем ключ доступа и порт
+            # Отправляем ссылку на подписку
             try:
-                key_text = f"🔑 Ваш ключ: {user.get('uuid')}\n🔌 Порт: {user.get('port')}"
-                await callback.message.answer(key_text)
+                short_id = user.get('short_id')
+                if short_id:
+                    link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
+                    subscription_text = (
+                        "✅ *Подписка активирована!*\n\n"
+                        "🔗 Ваша ссылка на подписку:\n"
+                        f"`{link}`\n\n"
+                        "💡 Эту ссылку можно сохранить и использовать позже. "
+                        "Если IP сервера изменится, ссылка останется рабочей."
+                    )
+                    await callback.message.answer(subscription_text, parse_mode="Markdown")
+                else:
+                    logging.error(f"⚠️ short_id не найден для пользователя {telegram_id}")
             except Exception as e:
-                logging.error(f"❌ Ошибка при отправке ключа пользователю {telegram_id}: {e}")
+                logging.error(f"❌ Ошибка при отправке ссылки подписки пользователю {telegram_id}: {e}")
 
-                logging.info(f"✅ Платеж {payment_id} успешно принят и подписка обновлена для {telegram_id}")
-            else:
-                # Ошибка при обновлении в панели
-                await callback.message.edit_text(
-                    "✅ Платеж прошел, но не удалось автоматически активировать подписку в панели.\n\n"
-                    "Мы уведомили техподдержку — свяжитесь с ней для активации.",
-                    parse_mode="Markdown"
-                )
-                logging.error(f"❌ Не удалось обновить подписку в XUI для {email} после платежа {payment_id}")
+            logging.info(f"✅ Платеж {payment_id} успешно принят и подписка обновлена для {telegram_id}")
             
         elif status == 'pending':
             await callback.message.edit_text(
