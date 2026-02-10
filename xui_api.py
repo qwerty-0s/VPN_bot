@@ -290,12 +290,21 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
                 json=payload,
                 ssl=False
             ) as resp:
-                data = await resp.json(content_type=None)
-                if data.get("success"):
+                status = resp.status
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    logging.error(f"❌ Ошибка парсинга JSON от XUI (status={status}) для {email}: {text}")
+                    return False
+
+                logging.debug(f"update_client_subscription: response status={status}, data={repr(data)}")
+
+                if isinstance(data, dict) and data.get("success"):
                     logging.info(f"✅ Подписка продлена для {email}. Новая дата: {datetime.fromtimestamp(new_expiry/1000)}")
                     return True
                 else:
-                    logging.error(f"❌ Ошибка API при обновлении: {data}")
+                    logging.error(f"❌ Ошибка API при обновлении (status={status}): {repr(data)}")
                     return False
 
     except Exception as e:
