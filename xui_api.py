@@ -285,7 +285,7 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{XUI_API}/panel/api/inbounds/update",
+                f"{XUI_API}/panel/api/inbounds/update/{inbound_id}",
                 headers=headers,
                 json=payload,
                 ssl=False
@@ -346,10 +346,18 @@ async def disable_client(email: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{XUI_API}/panel/api/inbounds/update",
+                f"{XUI_API}/panel/api/inbounds/update/{inbound_id}",
                 headers=headers, json=payload, ssl=False
             ) as resp:
-                data = await resp.json(content_type=None)
+                status = resp.status
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    logging.error(f"❌ Ошибка парсинга JSON от XUI при disable (status={status}) для {email}: {text}")
+                    return False
+
+                logging.debug(f"disable_client: response status={status}, data={repr(data)}")
                 return data.get("success", False)
     except Exception as e:
         logging.error(f"Disable error: {e}")
