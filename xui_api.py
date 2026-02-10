@@ -1,5 +1,5 @@
 """Модуль для работы с XUI API"""
-import loging
+import logging
 import aiohttp
 import json
 import uuid
