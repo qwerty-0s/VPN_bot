@@ -226,6 +226,7 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
     try:
         # 1. Получаем текущие данные (прежде всего expiryTime)
         stats = await get_client_stats(email)
+        logging.debug(f"update_client_subscription: stats for {email}: {repr(stats)} (type={type(stats)})")
         current_expiry = 0
         
         if stats:
@@ -251,20 +252,25 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 
         # 3. Получаем inbound_id из базы данных по email (который равен telegram_id)
         user_data = await get_user_by_telegram_id(int(email))
+        logging.debug(f"update_client_subscription: user_data for {email}: {repr(user_data)} (type={type(user_data)})")
         if not user_data:
             logging.error(f"❌ Пользователь {email} не найден в БД при обновлении")
             return False
-        
-        # Защита от None
+
+        # Защита от None и неожиданных типов
         if user_data is None:
             logging.error(f"❌ user_data is None для {email}")
             return False
-            
-        inbound_id = user_data.get("inbound_id") if user_data else None
-        client_uuid = user_data.get("uuid") if user_data else None
-        
+
+        try:
+            inbound_id = user_data.get("inbound_id") if hasattr(user_data, 'get') else user_data['inbound_id'] if 'inbound_id' in user_data else None
+            client_uuid = user_data.get("uuid") if hasattr(user_data, 'get') else user_data['uuid'] if 'uuid' in user_data else None
+        except Exception as ex:
+            logging.error(f"❌ Ошибка извлечения полей user_data для {email}: {ex}; user_data={repr(user_data)}", exc_info=True)
+            return False
+
         if not inbound_id:
-            logging.error(f"❌ inbound_id не найден для пользователя {email}")
+            logging.error(f"❌ inbound_id не найден для пользователя {email}; user_data={repr(user_data)}")
             return False
 
         # 4. Отправляем запрос на обновление
