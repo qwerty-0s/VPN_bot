@@ -68,6 +68,26 @@ def get_months_keyboard(devices: int):
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+async def safe_edit_message(callback, text: str, reply_markup=None, parse_mode="Markdown"):
+    """
+    Безопасно редактирует сообщение callback
+    Если edit_text не работает (фото, документ), удаляет и отправляет новое
+    """
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as edit_error:
+        # Если edit_text не работает, пробуем удалить и отправить новое
+        try:
+            await callback.message.delete()
+        except:
+            pass
+        
+        try:
+            await callback.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        except Exception as answer_error:
+            logging.error(f"❌ Ошибка при редактировании: {edit_error}, ответе: {answer_error}")
+
+
 async def send_instruction_with_images(callback, user_short_id: str):
     """
     Отправляет две инструкции-изображения, текст подключения и ссылку на подписку
@@ -236,11 +256,11 @@ def register_handlers(dp):
         devices = int(callback.data.replace("devices_", ""))
         
         await callback.answer()
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback,
             f"📱 *Вы выбрали: {devices} устройств*\n\n"
             "⏱️ Теперь выберите срок подписки:",
-            reply_markup=get_months_keyboard(devices),
-            parse_mode="Markdown"
+            reply_markup=get_months_keyboard(devices)
         )
         logging.info(f"👤 Пользователь {telegram_id} выбрал {devices} устройств")
     
@@ -279,11 +299,11 @@ def register_handlers(dp):
         await callback.answer()
         
         # Отправляем сообщение о создании платежа
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback,
             f"⏳ Создаю платеж...\n\n"
             f"📦 Тариф: *{description}*\n"
-            f"💰 Сумма: *{price}₽*",
-            parse_mode="Markdown"
+            f"💰 Сумма: *{price}₽*"
         )
         
         # Создаем платеж через ЮKassa
@@ -294,7 +314,8 @@ def register_handlers(dp):
         )
         
         if not payment_url or not payment_id:
-            await callback.message.edit_text(
+            await safe_edit_message(
+                callback,
                 "❌ Не удалось создать платеж. Попробуйте позже или обратитесь в поддержку."
             )
             logging.error(f"❌ Ошибка создания платежа для пользователя {telegram_id}")
@@ -329,14 +350,14 @@ def register_handlers(dp):
             )]
         ])
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback,
             f"✅ *Платеж создан!*\n\n"
             f"📦 Тариф: *{description}*\n"
             f"💰 Сумма: *{price}₽*\n"
             f"🆔 ID платежа: `{payment_id}`\n\n"
             "👇 Нажмите кнопку ниже для оплаты:",
-            reply_markup=payment_keyboard,
-            parse_mode="Markdown"
+            reply_markup=payment_keyboard
         )
         
         logging.info(f"✅ Платеж {payment_id} создан для пользователя {telegram_id}, сумма: {price}₽")
@@ -345,10 +366,10 @@ def register_handlers(dp):
     @dp.callback_query(F.data == "back_to_devices")
     async def back_to_devices(callback: types.CallbackQuery):
         await callback.answer()
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback,
             "🛒 *Выберите кол-во устройств:*\n\n",
-            reply_markup=get_devices_keyboard(),
-            parse_mode="Markdown"
+            reply_markup=get_devices_keyboard()
         )
     
     # Проверка статуса платежа
@@ -363,7 +384,8 @@ def register_handlers(dp):
         payment_info = await check_payment_status(payment_id)
         
         if not payment_info:
-            await callback.message.edit_text(
+            await safe_edit_message(
+                callback,
                 "❌ Не удалось проверить статус платежа. Попробуйте позже."
             )
             logging.error(f"❌ Ошибка при проверке статуса платежа {payment_id}")
@@ -392,14 +414,16 @@ def register_handlers(dp):
                 # Первая покупка — создаем подписку + бонус 3 дня
                 total_days = added_days + 3
                 
-                await callback.message.edit_text(
+                await safe_edit_message(
+                    callback,
                     "⏳ Создаю вашу подписку..."
                 )
                 
                 trial_result = await create_trial_inbound(telegram_id)
                 
                 if not trial_result or trial_result.get("error"):
-                    await callback.message.edit_text(
+                    await safe_edit_message(
+                        callback,
                         "❌ Платеж принят, но не удалось создать подписку.\n\n"
                         "Пожалуйста, свяжитесь с техподдержкой для ручной активации."
                     )
@@ -415,7 +439,8 @@ def register_handlers(dp):
                 user = await get_user_by_telegram_id(telegram_id)
                 if not user:
                     logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания. Проверьте БД.")
-                    await callback.message.edit_text(
+                    await safe_edit_message(
+                        callback,
                         "❌ Ошибка при получении данных из базы. Свяжитесь с техподдержкой."
                     )
                     return
@@ -432,7 +457,8 @@ def register_handlers(dp):
                     logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}", exc_info=True)
                 
                 if not success:
-                    await callback.message.edit_text(
+                    await safe_edit_message(
+                        callback,
                         "⚠️ Подписка создана, но не удалось применить купленные дни.\n\n"
                         "Свяжитесь с техподдержкой."
                     )
@@ -452,7 +478,8 @@ def register_handlers(dp):
                     logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
                 
                 if not success:
-                    await callback.message.edit_text(
+                    await safe_edit_message(
+                        callback,
                         "❌ Платеж принят, но не удалось продлить подписку.\n\n"
                         "Пожалуйста, свяжитесь с техподдержкой."
                     )
@@ -462,7 +489,14 @@ def register_handlers(dp):
                 logging.info(f"✅ Подписка продлена для {telegram_id} на {added_days} дней")
 
             # Отправляем финальное сообщение, инструкцию и ссылку подписки
-            await callback.message.edit_text(
+            # Удаляем старый меню-mensaje и отправляем новое
+            try:
+                await callback.message.delete()
+            except Exception as e:
+                logging.warning(f"⚠️ Не удалось удалить сообщение: {e}")
+            
+            # Отправляем сообщение об успехе
+            await callback.message.answer(
                 "✅ Оплата прошла успешно! Подписка активирована/продлена.",
                 parse_mode="Markdown"
             )
@@ -486,24 +520,27 @@ def register_handlers(dp):
 
             
         elif status == 'pending':
-            await callback.message.edit_text(
+            await safe_edit_message(
+                callback,
                 "⏳ *Платеж еще в процессе обработки.*\n\n"
-                "Попробуйте проверить позже.",
-                parse_mode="Markdown"
+                "Попробуйте проверить позже."
             )
             
         elif status == 'canceled':
-            await callback.message.edit_text(
+            await safe_edit_message(
+                callback,
                 "❌ *Платеж отменен или истек срок действия.*\n\n"
-                "Вернитесь в меню и попробуйте снова.",
-                parse_mode="Markdown"
+                "Вернитесь в меню и попробуйте снова."
             )
             logging.warning(f"⚠️ Платеж {payment_id} отменен для пользователя {telegram_id}")
     
     # Отмена платежа / покупки
     @dp.callback_query(F.data.startswith("cancel_"))
     async def cancel_action(callback: types.CallbackQuery):
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.answer("Действие отменено. Вернитесь в главное меню.")
     
     # ======================== ПРОФИЛЬ ========================
@@ -586,18 +623,36 @@ def register_handlers(dp):
     async def back_to_menu_callback(callback: types.CallbackQuery):
         """Обработчик для возврата в главное меню"""
         await callback.answer()
-        await callback.message.edit_text(
+        
+        menu_text = (
             "👋 Главное меню\n\n"
-            "✨ Выбери действие ниже:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💎 Купить подписку", callback_data="buy_subscription")],
-                [InlineKeyboardButton(text="🚀 Пробная подписка", callback_data="trial_subscription")],
-                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile_callback")],
-                [InlineKeyboardButton(text="⚙️ Техподдержка", callback_data="support_callback")],
-                [InlineKeyboardButton(text="📋 Пользовательское соглашение", callback_data="agreement_callback")]
-            ]),
-            parse_mode="Markdown"
+            "✨ Выбери действие ниже:"
         )
+        
+        menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Купить подписку", callback_data="buy_subscription")],
+            [InlineKeyboardButton(text="🚀 Пробная подписка", callback_data="trial_subscription")],
+            [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile_callback")],
+            [InlineKeyboardButton(text="⚙️ Техподдержка", callback_data="support_callback")],
+            [InlineKeyboardButton(text="📋 Пользовательское соглашение", callback_data="agreement_callback")]
+        ])
+        
+        try:
+            # Пытаемся отредактировать текстовое сообщение
+            await callback.message.edit_text(menu_text, reply_markup=menu_keyboard)
+        except Exception as edit_error:
+            # Если edit_text не сработал (фото, документ и т.д.)
+            # Удаляем старое сообщение и отправляем новое
+            try:
+                await callback.message.delete()
+            except:
+                pass
+            
+            try:
+                await callback.message.answer(menu_text, reply_markup=menu_keyboard)
+            except Exception as e:
+                logging.error(f"❌ Ошибка при отправке меню: {e}")
+        
         logging.info(f"📌 Пользователь {callback.from_user.id} вернулся в главное меню")
     
     # ======================== ОБРАБОТКА ОСТАЛЬНЫХ СООБЩЕНИЙ ========================
