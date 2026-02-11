@@ -474,22 +474,11 @@ def register_handlers(dp):
     
     @dp.message(F.text == "⚙️ Техподдержка")
     async def support_button(message: types.Message):
-        support_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="💬 Написать в Telegram",
-                url="https://t.me/qwertyFall"  # Замени на реальный юзер
-            )],
-            [InlineKeyboardButton(
-                text="📧 Email поддержки",
-                url="mailto:vpn_proxima_support@protonmail.com"  # Email в формате mailto:
-            )]
-        ])
-        
         await message.answer(
             "⚙️ *Техническая поддержка*\n\n"
             "❓ У вас есть вопрос или проблема?\n\n"
-            "Свяжитесь с нами одним из способов:",
-            reply_markup=support_keyboard,
+            "💬 Напишите в Telegram: @qwertyFall\n\n"
+            "Мы ответим вам в кратчайшие сроки!",
             parse_mode="Markdown"
         )
     
