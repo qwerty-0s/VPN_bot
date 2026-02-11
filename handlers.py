@@ -481,7 +481,7 @@ def register_handlers(dp):
             )],
             [InlineKeyboardButton(
                 text="📧 Email поддержки",
-                url="vpn_proxima_support@protonmail.com"  # Замени на реальный email
+                url="mailto:vpn_proxima_support@protonmail.com"  # Email в формате mailto:
             )]
         ])
         
