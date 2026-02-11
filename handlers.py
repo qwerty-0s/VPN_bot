@@ -1,7 +1,7 @@
 """Обработчики сообщений для Telegram бота"""
 import logging
 from aiogram import F, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from xui_api import create_trial_inbound, update_client_subscription
 from yookassa_pay import create_payment_link, check_payment_status
 from database import save_payment, update_payment, get_user_by_telegram_id
@@ -21,22 +21,55 @@ main_menu = ReplyKeyboardMarkup(
 )
 
 
-# Inline меню техподдержки
-def get_support_keyboard():
-    """Создает inline-клавиатуру для техподдержки"""
-    keyboard = [
-        [InlineKeyboardButton(text="💬 Telegram", url="https://t.me/qwertyFall")],
-        [InlineKeyboardButton(text="📧 Email поддержки", url="mailto:vpn_proxima_support@protonmail.com")],
-        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-def get_back_to_menu_keyboard():
-    """Создает inline-клавиатуру для возврата в меню"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_menu")]
-    ])
+async def send_subscription_with_instructions(message_or_callback, link: str, short_id: str):
+    """Отправляет две инструкции и ссылку на подписку в одном сообщении"""
+    try:
+        # Подготавливаем текст с ссылкой и инструкциями
+        subscription_text = (
+            "✅ *Подписка активирована!*\n\n"
+            "🔗 Ваша ссылка на подписку:\n"
+            f"`{link}`\n\n"
+            "1️⃣ установите V2RayTun https://v2raytun.com/ \n"
+            "2️⃣ скопируйте ссылку, кликнув по ней \n"
+            "3️⃣ вставьте ссылку в V2RayTun и подключитесь\n"
+        )
+        
+        # Проверяем существование файлов инструкций
+        instr1_path = 'Instruction1.jpg'
+        instr2_path = 'Instruction2.jpg'
+        
+        if os.path.exists(instr1_path) and os.path.exists(instr2_path):
+            # Создаем media_group с двумя изображениями
+            media_group = [
+                InputMediaPhoto(
+                    media=types.FSInputFile(instr1_path),
+                    caption=subscription_text,
+                    parse_mode="Markdown"
+                ),
+                InputMediaPhoto(
+                    media=types.FSInputFile(instr2_path)
+                )
+            ]
+            
+            # Отправляем группу медиа
+            if hasattr(message_or_callback, 'message'):
+                # Это callback_query
+                await message_or_callback.message.answer_media_group(media=media_group)
+            else:
+                # Это обычное сообщение
+                await message_or_callback.answer_media_group(media=media_group)
+            
+            logging.info(f"✅ Отправлены две инструкции с ссылкой {short_id}")
+        else:
+            # Если файлов инструкций нет, отправляем просто текст
+            if hasattr(message_or_callback, 'message'):
+                await message_or_callback.message.answer(subscription_text, parse_mode="Markdown")
+            else:
+                await message_or_callback.answer(subscription_text, parse_mode="Markdown")
+            
+            logging.warning(f"⚠️ Файлы инструкций не найдены, отправлен только текст для {short_id}")
+    except Exception as e:
+        logging.error(f"❌ Ошибка при отправке подписки с инструкциями: {e}")
 
 
 def get_devices_keyboard():
@@ -58,7 +91,7 @@ def get_months_keyboard(devices: int):
     for (months, dev), tariff_info in sorted(TARIFFS.items()):
         if dev == devices:
             price = tariff_info['price']
-            button_text = f"{months} месяца - {price}₽"
+            button_text = f"{months} месяц(-а/-ев) - {price}₽"
             callback_data = f"month_{months}m_{devices}d"
             keyboard.append([InlineKeyboardButton(text=button_text, callback_data=callback_data)])
     
@@ -66,125 +99,6 @@ def get_months_keyboard(devices: int):
     keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-async def safe_edit_message(callback, text: str, reply_markup=None, parse_mode="Markdown"):
-    """
-    Безопасно редактирует сообщение callback
-    Если edit_text не работает (фото, документ), удаляет и отправляет новое
-    """
-    try:
-        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except Exception as edit_error:
-        # Если edit_text не работает, пробуем удалить и отправить новое
-        try:
-            await callback.message.delete()
-        except:
-            pass
-        
-        try:
-            await callback.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
-        except Exception as answer_error:
-            logging.error(f"❌ Ошибка при редактировании: {edit_error}, ответе: {answer_error}")
-
-
-async def send_instruction_with_images(callback, user_short_id: str):
-    """
-    Отправляет две инструкции-изображения, текст подключения и ссылку на подписку
-    """
-    try:
-        # Отправляем первое изображение инструкции
-        instr1_path = 'Instruction1.jpg'
-        if os.path.exists(instr1_path):
-            await callback.message.answer_photo(
-                types.FSInputFile(instr1_path),
-                caption="📱 Инструкция подключения - Часть 1"
-            )
-            logging.info("✅ Первое изображение инструкции отправлено")
-        else:
-            logging.warning(f"⚠️ Файл {instr1_path} не найден")
-        
-        # Отправляем второе изображение инструкции
-        instr2_path = 'Instruction2.jpg'
-        if os.path.exists(instr2_path):
-            await callback.message.answer_photo(
-                types.FSInputFile(instr2_path),
-                caption="📱 Инструкция подключения - Часть 2"
-            )
-            logging.info("✅ Второе изображение инструкции отправлено")
-        else:
-            logging.warning(f"⚠️ Файл {instr2_path} не найден")
-        
-        # Отправляем ссылку на подписку и текст инструкции
-        if user_short_id:
-            link = f"https://{FRONT_DOMAIN}/sub/{user_short_id}"
-            subscription_text = (
-                "✅ *Подписка активирована!*\n\n"
-                "🔗 Ваша ссылка на подписку:\n"
-                f"`{link}`\n\n"
-                "📌 *Шаги подключения:*\n"
-                "1️⃣ Нажмите на ссылку и она скопируется в буффер обмена\n"
-                "2️⃣ Вставьте ссылку в HAPP или любой другой VPN клиент, нажав импорт из буфера\n"
-                "3️⃣ Подключитесь к VPN и готово! 🎉"
-            )
-            await callback.message.answer(subscription_text, parse_mode="Markdown")
-            logging.info(f"✅ Инструкция и ссылка отправлены для пользователя с short_id={user_short_id}")
-        else:
-            logging.error("⚠️ short_id не найден, ссылка не отправлена")
-            
-    except Exception as e:
-        logging.error(f"❌ Ошибка при отправке инструкций: {e}")
-
-
-async def send_instruction_with_images_message(message, user_short_id: str):
-    """
-    Отправляет две инструкции-изображения, текст подключения и ссылку на подписку
-    Версия для message (для пробной подписки)
-    """
-    try:
-        # Отправляем первое изображение инструкции
-        instr1_path = 'Instruction1.jpg'
-        if os.path.exists(instr1_path):
-            await message.answer_photo(
-                types.FSInputFile(instr1_path),
-                caption="📱 Инструкция подключения - Часть 1"
-            )
-            logging.info("✅ Первое изображение инструкции отправлено")
-        else:
-            logging.warning(f"⚠️ Файл {instr1_path} не найден")
-        
-        # Отправляем второе изображение инструкции
-        instr2_path = 'Instruction2.jpg'
-        if os.path.exists(instr2_path):
-            await message.answer_photo(
-                types.FSInputFile(instr2_path),
-                caption="📱 Инструкция подключения - Часть 2"
-            )
-            logging.info("✅ Второе изображение инструкции отправлено")
-        else:
-            logging.warning(f"⚠️ Файл {instr2_path} не найден")
-        
-        # Отправляем ссылку на подписку и текст инструкции
-        if user_short_id:
-            link = f"https://{FRONT_DOMAIN}/sub/{user_short_id}"
-            subscription_text = (
-                "✅ *Пробная подписка активирована!*\n\n"
-                "⏱️ Срок действия: *3 дня*\n"
-                "📱 Лимит устройств: *1*\n\n"
-                "🔗 Ваша ссылка на подписку:\n"
-                f"`{link}`\n\n"
-                "📌 *Шаги подключения:*\n"
-                "1️⃣ Нажмите на ссылку и она скопируется в буффер обмена\n"
-                "2️⃣ Вставьте ссылку в HAPP или любой другой VPN клиент, нажав импорт из буфера\n"
-                "3️⃣ Подключитесь к VPN и готово! 🎉"
-            )
-            await message.answer(subscription_text, parse_mode="Markdown")
-            logging.info(f"✅ Инструкция и ссылка пробной подписки отправлены для пользователя с short_id={user_short_id}")
-        else:
-            logging.error("⚠️ short_id не найден, ссылка не отправлена")
-            
-    except Exception as e:
-        logging.error(f"❌ Ошибка при отправке инструкций: {e}")
 
 
 def register_handlers(dp):
@@ -196,9 +110,9 @@ def register_handlers(dp):
         user_name = message.from_user.first_name or "пользователь"
         
         await message.answer(
-            f"👋 Привет, {user_name}! 🎉\n\n"
-            "Я помогу тебе управлять VPN подписками.\n\n"
-            "✨ Выбери действие ниже:",
+            f"Здравствуйте, {user_name}!\n\n"
+            "Здесь вы можете получить VPN\n\n"
+            "Выберите действие ниже:",
             reply_markup=main_menu
         )
         logging.info(f"👤 Пользователь {user_id} нажал /start")
@@ -231,9 +145,7 @@ def register_handlers(dp):
         short_id = result["short_id"]
         link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
 
-        # Отправляем две инструкции-изображения, текст и ссылку
-        await send_instruction_with_images_message(message, short_id)
-        
+        await send_subscription_with_instructions(message, link, short_id)
         logging.info(f"✅ Пробная подписка создана для пользователя {telegram_id}")
     
     # ======================== ПОКУПКА ПОДПИСКИ (ДВУХУРОВНЕВОЕ МЕНЮ) ========================
@@ -243,7 +155,8 @@ def register_handlers(dp):
         telegram_id = message.from_user.id
         
         await message.answer(
-            "🛒 *Выберите кол-во устройств:*\n\n",
+            "🛒 *Выберите кол-во устройств:*\n\n"
+            "Это определит, сколько девайсов смогут одновременно использовать вашу подписку.",
             reply_markup=get_devices_keyboard(),
             parse_mode="Markdown"
         )
@@ -256,11 +169,11 @@ def register_handlers(dp):
         devices = int(callback.data.replace("devices_", ""))
         
         await callback.answer()
-        await safe_edit_message(
-            callback,
+        await callback.message.edit_text(
             f"📱 *Вы выбрали: {devices} устройств*\n\n"
             "⏱️ Теперь выберите срок подписки:",
-            reply_markup=get_months_keyboard(devices)
+            reply_markup=get_months_keyboard(devices),
+            parse_mode="Markdown"
         )
         logging.info(f"👤 Пользователь {telegram_id} выбрал {devices} устройств")
     
@@ -299,11 +212,11 @@ def register_handlers(dp):
         await callback.answer()
         
         # Отправляем сообщение о создании платежа
-        await safe_edit_message(
-            callback,
+        await callback.message.edit_text(
             f"⏳ Создаю платеж...\n\n"
             f"📦 Тариф: *{description}*\n"
-            f"💰 Сумма: *{price}₽*"
+            f"💰 Сумма: *{price}₽*",
+            parse_mode="Markdown"
         )
         
         # Создаем платеж через ЮKassa
@@ -314,8 +227,7 @@ def register_handlers(dp):
         )
         
         if not payment_url or not payment_id:
-            await safe_edit_message(
-                callback,
+            await callback.message.edit_text(
                 "❌ Не удалось создать платеж. Попробуйте позже или обратитесь в поддержку."
             )
             logging.error(f"❌ Ошибка создания платежа для пользователя {telegram_id}")
@@ -350,14 +262,14 @@ def register_handlers(dp):
             )]
         ])
         
-        await safe_edit_message(
-            callback,
+        await callback.message.edit_text(
             f"✅ *Платеж создан!*\n\n"
             f"📦 Тариф: *{description}*\n"
             f"💰 Сумма: *{price}₽*\n"
             f"🆔 ID платежа: `{payment_id}`\n\n"
             "👇 Нажмите кнопку ниже для оплаты:",
-            reply_markup=payment_keyboard
+            reply_markup=payment_keyboard,
+            parse_mode="Markdown"
         )
         
         logging.info(f"✅ Платеж {payment_id} создан для пользователя {telegram_id}, сумма: {price}₽")
@@ -366,10 +278,11 @@ def register_handlers(dp):
     @dp.callback_query(F.data == "back_to_devices")
     async def back_to_devices(callback: types.CallbackQuery):
         await callback.answer()
-        await safe_edit_message(
-            callback,
-            "🛒 *Выберите кол-во устройств:*\n\n",
-            reply_markup=get_devices_keyboard()
+        await callback.message.edit_text(
+            "🛒 *Выберите кол-во устройств:*\n\n"
+            "Это определит, сколько устройств смогут одновременно использовать вашу подписку.",
+            reply_markup=get_devices_keyboard(),
+            parse_mode="Markdown"
         )
     
     # Проверка статуса платежа
@@ -384,8 +297,7 @@ def register_handlers(dp):
         payment_info = await check_payment_status(payment_id)
         
         if not payment_info:
-            await safe_edit_message(
-                callback,
+            await callback.message.edit_text(
                 "❌ Не удалось проверить статус платежа. Попробуйте позже."
             )
             logging.error(f"❌ Ошибка при проверке статуса платежа {payment_id}")
@@ -414,16 +326,14 @@ def register_handlers(dp):
                 # Первая покупка — создаем подписку + бонус 3 дня
                 total_days = added_days + 3
                 
-                await safe_edit_message(
-                    callback,
+                await callback.message.edit_text(
                     "⏳ Создаю вашу подписку..."
                 )
                 
                 trial_result = await create_trial_inbound(telegram_id)
                 
                 if not trial_result or trial_result.get("error"):
-                    await safe_edit_message(
-                        callback,
+                    await callback.message.edit_text(
                         "❌ Платеж принят, но не удалось создать подписку.\n\n"
                         "Пожалуйста, свяжитесь с техподдержкой для ручной активации."
                     )
@@ -439,8 +349,7 @@ def register_handlers(dp):
                 user = await get_user_by_telegram_id(telegram_id)
                 if not user:
                     logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания. Проверьте БД.")
-                    await safe_edit_message(
-                        callback,
+                    await callback.message.edit_text(
                         "❌ Ошибка при получении данных из базы. Свяжитесь с техподдержкой."
                     )
                     return
@@ -457,8 +366,7 @@ def register_handlers(dp):
                     logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}", exc_info=True)
                 
                 if not success:
-                    await safe_edit_message(
-                        callback,
+                    await callback.message.edit_text(
                         "⚠️ Подписка создана, но не удалось применить купленные дни.\n\n"
                         "Свяжитесь с техподдержкой."
                     )
@@ -478,8 +386,7 @@ def register_handlers(dp):
                     logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
                 
                 if not success:
-                    await safe_edit_message(
-                        callback,
+                    await callback.message.edit_text(
                         "❌ Платеж принят, но не удалось продлить подписку.\n\n"
                         "Пожалуйста, свяжитесь с техподдержкой."
                     )
@@ -489,21 +396,18 @@ def register_handlers(dp):
                 logging.info(f"✅ Подписка продлена для {telegram_id} на {added_days} дней")
 
             # Отправляем финальное сообщение, инструкцию и ссылку подписки
-            # Удаляем старый меню-mensaje и отправляем новое
-            try:
-                await callback.message.delete()
-            except Exception as e:
-                logging.warning(f"⚠️ Не удалось удалить сообщение: {e}")
-            
-            # Отправляем сообщение об успехе
-            await callback.message.answer(
+            await callback.message.edit_text(
                 "✅ Оплата прошла успешно! Подписка активирована/продлена.",
                 parse_mode="Markdown"
             )
 
-            # Отправляем две инструкции-изображения, текст и ссылку на подписку
-            short_id = user.get('short_id')
-            await send_instruction_with_images(callback, short_id)
+            # Отправляем инструкцию в виде изображения, если есть
+            try:
+                instr_path = 'instruction.jpg'
+                if os.path.exists(instr_path):
+                    await callback.message.answer_photo(types.FSInputFile(instr_path), caption="Инструкция по подключению")
+            except Exception as e:
+                logging.warning(f"⚠️ Не удалось отправить instruction.jpg: {e}")
 
             # Отправляем пользовательское соглашение в формате PDF если есть, иначе TXT
             try:
@@ -516,31 +420,38 @@ def register_handlers(dp):
             except Exception as e:
                 logging.warning(f"⚠️ Не удалось отправить пользовательское соглашение: {e}")
 
-            logging.info(f"✅ Платеж {payment_id} успешно принят и подписка обновлена для {telegram_id}")
+            # Отправляем ссылку на подписку с двумя инструкциями
+            try:
+                short_id = user.get('short_id')
+                if short_id:
+                    link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
+                    await send_subscription_with_instructions(callback, link, short_id)
+                else:
+                    logging.error(f"⚠️ short_id не найден для пользователя {telegram_id}")
+            except Exception as e:
+                logging.error(f"❌ Ошибка при отправке ссылки подписки пользователю {telegram_id}: {e}")
 
+            logging.info(f"✅ Платеж {payment_id} успешно принят и подписка обновлена для {telegram_id}")
             
         elif status == 'pending':
-            await safe_edit_message(
-                callback,
+            await callback.message.edit_text(
                 "⏳ *Платеж еще в процессе обработки.*\n\n"
-                "Попробуйте проверить позже."
+                "Попробуйте проверить позже.",
+                parse_mode="Markdown"
             )
             
         elif status == 'canceled':
-            await safe_edit_message(
-                callback,
+            await callback.message.edit_text(
                 "❌ *Платеж отменен или истек срок действия.*\n\n"
-                "Вернитесь в меню и попробуйте снова."
+                "Вернитесь в меню и попробуйте снова.",
+                parse_mode="Markdown"
             )
             logging.warning(f"⚠️ Платеж {payment_id} отменен для пользователя {telegram_id}")
     
     # Отмена платежа / покупки
     @dp.callback_query(F.data.startswith("cancel_"))
     async def cancel_action(callback: types.CallbackQuery):
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
+        await callback.message.delete()
         await callback.answer("Действие отменено. Вернитесь в главное меню.")
     
     # ======================== ПРОФИЛЬ ========================
@@ -554,10 +465,8 @@ def register_handlers(dp):
             "📱 Лимит устройств: -\n\n"
             "⚠️ Функция профиля находится в разработке.\n\n"
             "Проверьте вашу подписку через кнопку проверки платежа.",
-            reply_markup=get_back_to_menu_keyboard(),
             parse_mode="Markdown"
         )
-        logging.info(f"👤 Пользователь {message.from_user.id} открыл профиль")
     
     # NOTE: instruction button removed — instructions are sent together with subscription after successful payment
     
@@ -565,14 +474,24 @@ def register_handlers(dp):
     
     @dp.message(F.text == "⚙️ Техподдержка")
     async def support_button(message: types.Message):
+        support_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="💬 Написать в Telegram",
+                url="https://t.me/qwertyFall"  # Замени на реальный юзер
+            )],
+            [InlineKeyboardButton(
+                text="📧 Email поддержки",
+                url="vpn_proxima_support@protonmail.com"  # Замени на реальный email
+            )]
+        ])
+        
         await message.answer(
             "⚙️ *Техническая поддержка*\n\n"
             "❓ У вас есть вопрос или проблема?\n\n"
             "Свяжитесь с нами одним из способов:",
-            reply_markup=get_support_keyboard(),
+            reply_markup=support_keyboard,
             parse_mode="Markdown"
         )
-        logging.info(f"⚙️ Пользователь {message.from_user.id} открыл раздел техподдержки")
     
     # ======================== ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ ========================
     
@@ -586,16 +505,14 @@ def register_handlers(dp):
                 with open(agreement_path, 'rb') as file:
                     await message.answer_document(
                         document=types.FSInputFile(agreement_path),
-                        caption="📋 Пользовательское соглашение",
-                        reply_markup=get_back_to_menu_keyboard()
+                        caption="📋 Пользовательское соглашение"
                     )
                 logging.info(f"📋 Пользователь {message.from_user.id} скачал соглашение")
             except Exception as e:
                 logging.error(f"❌ Ошибка при отправке соглашения: {e}")
                 await message.answer(
                     "❌ Не удалось загрузить файл соглашения. "
-                    "Обратитесь в техподдержку.",
-                    reply_markup=get_back_to_menu_keyboard()
+                    "Обратитесь в техподдержку."
                 )
         else:
             # Если файла нет, отправляем текст в сообщении
@@ -612,55 +529,15 @@ def register_handlers(dp):
                 "5️⃣ *Изменение условий*\n"
                 "Мы оставляем право изменять условия без предварительного уведомления.\n\n"
                 "✅ Спасибо за использование нашего сервиса!",
-                reply_markup=get_back_to_menu_keyboard(),
                 parse_mode="Markdown"
             )
             logging.info(f"📋 Пользователь {message.from_user.id} просмотрел соглашение (текст)")
-    
-    # ======================== CALLBACK ОБРАБОТЧИКИ МЕНЮ ========================
-    
-    @dp.callback_query(F.data == "back_to_menu")
-    async def back_to_menu_callback(callback: types.CallbackQuery):
-        """Обработчик для возврата в главное меню"""
-        await callback.answer()
-        
-        menu_text = (
-            "👋 Главное меню\n\n"
-            "✨ Выбери действие ниже:"
-        )
-        
-        menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 Купить подписку", callback_data="buy_subscription")],
-            [InlineKeyboardButton(text="🚀 Пробная подписка", callback_data="trial_subscription")],
-            [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile_callback")],
-            [InlineKeyboardButton(text="⚙️ Техподдержка", callback_data="support_callback")],
-            [InlineKeyboardButton(text="📋 Пользовательское соглашение", callback_data="agreement_callback")]
-        ])
-        
-        try:
-            # Пытаемся отредактировать текстовое сообщение
-            await callback.message.edit_text(menu_text, reply_markup=menu_keyboard)
-        except Exception as edit_error:
-            # Если edit_text не сработал (фото, документ и т.д.)
-            # Удаляем старое сообщение и отправляем новое
-            try:
-                await callback.message.delete()
-            except:
-                pass
-            
-            try:
-                await callback.message.answer(menu_text, reply_markup=menu_keyboard)
-            except Exception as e:
-                logging.error(f"❌ Ошибка при отправке меню: {e}")
-        
-        logging.info(f"📌 Пользователь {callback.from_user.id} вернулся в главное меню")
     
     # ======================== ОБРАБОТКА ОСТАЛЬНЫХ СООБЩЕНИЙ ========================
     
     @dp.message()
     async def default_handler(message: types.Message):
         """Обработчик для остальных сообщений"""
-
         await message.answer(
             "😕 Я не понимаю эту команду.\n\n"
             "Используйте кнопки меню ниже или напишите /start для перезагрузки меню.",
