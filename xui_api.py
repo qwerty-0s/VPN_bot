@@ -83,8 +83,8 @@ async def get_free_port():
         return None
 
 
-async def create_trial_inbound(telegram_id: int):
-    """Создает подписку (клиента) в панели"""
+async def create_client_inbound(telegram_id: int):
+    """Создает подписку (клиента) в панели (used for trial and new paid users)"""
     global xui_cookie
     
     if await user_exists(telegram_id):
@@ -104,7 +104,8 @@ async def create_trial_inbound(telegram_id: int):
     expiry = int((datetime.now() + timedelta(days=3)).timestamp() * 1000)
     client_uuid = str(uuid.uuid4())
     email = str(telegram_id)
-    short_id = secrets.token_hex(3)
+    # Generate clean hex subId without any "trial_" prefix
+    short_id = secrets.token_hex(8)  # Fix: generate cleaner, longer hex subId
     port = await get_free_port()
     
     if not port:
@@ -131,9 +132,10 @@ async def create_trial_inbound(telegram_id: int):
         "up": 0, "down": 0, "total": 0,
         "remark": email,
         "enable": True,
-        "expiryTime": expiry,
+        # Fix: set root expiryTime to 0 so the port itself never expires
+        "expiryTime": 0,  # Fix: Port infinity expiry
         "listen": "",
-        "port": port,  
+        "port": port,
         "protocol": "vless",
         "settings": json.dumps(settings),
         "streamSettings": json.dumps({

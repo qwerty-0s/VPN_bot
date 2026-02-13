@@ -378,6 +378,19 @@ async def update_payment(payment_id: str, status: str):
         logging.error(f"❌ Ошибка при обновлении платежа: {e}")
 
 
+async def mark_payment_as_processed(payment_id: str):
+    """
+    Помечает платеж как обработанный локально (completed).
+    Вызывается только после успешного начисления дней/обновления подписки в XUI.
+    """
+    try:
+        # Используем существующую функцию обновления статуса
+        await update_payment(payment_id, status='completed')
+        logging.info(f"✅ Платеж {payment_id} помечен как processed (completed)")
+    except Exception as e:
+        logging.error(f"❌ Ошибка при пометке платежа как обработанного: {e}")
+
+
 async def get_user_payments(telegram_id: int):
     """
     Возвращает все платежи пользователя.

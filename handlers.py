@@ -2,9 +2,12 @@
 import logging
 from aiogram import F, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
-from xui_api import create_trial_inbound, update_client_subscription
+from xui_api import create_client_inbound, update_client_subscription
 from yookassa_pay import create_payment_link, check_payment_status
-from database import save_payment, update_payment, get_user_by_telegram_id
+from database import (
+    save_payment, update_payment, get_user_by_telegram_id,
+    get_payment_by_id, mark_payment_as_processed
+)
 from config import FRONT_DOMAIN, TARIFFS
 import os
 
@@ -135,7 +138,7 @@ def register_handlers(dp):
             return
         
         # Создаем пробную подписку (3 дня)
-        result = await create_trial_inbound(telegram_id)
+        result = await create_client_inbound(telegram_id)
         
         if not result or result.get("error"):
             await message.answer("❌ Не удалось создать пробную подписку.")
@@ -290,24 +293,35 @@ def register_handlers(dp):
     async def check_payment(callback: types.CallbackQuery):
         telegram_id = callback.from_user.id
         payment_id = callback.data.replace("check_payment_", "")
-        
+
         await callback.answer("⏳ Проверяю статус платежа...")
-        
+
         # Проверяем статус в ЮKassa
         payment_info = await check_payment_status(payment_id)
-        
+
         if not payment_info:
             await callback.message.edit_text(
                 "❌ Не удалось проверить статус платежа. Попробуйте позже."
             )
             logging.error(f"❌ Ошибка при проверке статуса платежа {payment_id}")
             return
-        
+
         status = payment_info.get('status')
-        
+
         if status == 'succeeded':
-            # Платеж успешен! Обновляем статус в БД
-            await update_payment(payment_id, status='succeeded')
+            # Prevent double spending: check if we've already processed this payment
+            try:
+                local_payment = await get_payment_by_id(payment_id)
+            except Exception as e:
+                local_payment = None
+                logging.error(f"❌ Ошибка при получении платежа из БД {payment_id}: {e}")
+
+            if local_payment and local_payment.get('status') == 'completed':
+                await callback.message.edit_text(
+                    "⚠️ Этот платеж уже был обработан. Если есть проблемы — свяжитесь с техподдержкой."
+                )
+                logging.warning(f"⚠️ Повторный запрос обработки платежа {payment_id} от {telegram_id}")
+                return
 
             # Извлекаем метаданные тарифа
             metadata = payment_info.get('metadata') or {}
@@ -321,17 +335,14 @@ def register_handlers(dp):
                 user = None
                 logging.error(f"❌ Ошибка при получении пользователя {telegram_id} из БД: {e}")
 
-            # ВАЖНО: Если это первая покупка (пользователя нет в БД), создаем подписку
+            # Если это первая покупка (пользователя нет в БД), создаем подписку
             if not user:
-                # Первая покупка — создаем подписку + бонус 3 дня
                 total_days = added_days + 3
-                
-                await callback.message.edit_text(
-                    "⏳ Создаю вашу подписку..."
-                )
-                
-                trial_result = await create_trial_inbound(telegram_id)
-                
+
+                await callback.message.edit_text("⏳ Создаю вашу подписку...")
+
+                trial_result = await create_client_inbound(telegram_id)
+
                 if not trial_result or trial_result.get("error"):
                     await callback.message.edit_text(
                         "❌ Платеж принят, но не удалось создать подписку.\n\n"
@@ -339,13 +350,13 @@ def register_handlers(dp):
                     )
                     logging.error(f"❌ Не удалось создать подписку для {telegram_id}, результат: {trial_result}")
                     return
-                
+
                 logging.info(f"✅ Подписка создана для {telegram_id}, inbound_id: {trial_result.get('inbound_id')}")
-                
+
                 # Получаем свежие данные пользователя из БД
                 import asyncio
                 await asyncio.sleep(0.5)  # Небольшая задержка для синхронизации БД
-                
+
                 user = await get_user_by_telegram_id(telegram_id)
                 if not user:
                     logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания. Проверьте БД.")
@@ -353,9 +364,9 @@ def register_handlers(dp):
                         "❌ Ошибка при получении данных из базы. Свяжитесь с техподдержкой."
                     )
                     return
-                
+
                 logging.info(f"✅ Данные пользователя получены: telegram_id={telegram_id}, email={user.get('email')}, inbound_id={user.get('inbound_id')}")
-                
+
                 # Обновляем подписку с купленными днями + 3 дня бонуса
                 email = user.get('email')
                 try:
@@ -364,7 +375,7 @@ def register_handlers(dp):
                 except Exception as e:
                     success = False
                     logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}", exc_info=True)
-                
+
                 if not success:
                     await callback.message.edit_text(
                         "⚠️ Подписка создана, но не удалось применить купленные дни.\n\n"
@@ -372,19 +383,25 @@ def register_handlers(dp):
                     )
                     logging.error(f"❌ Не удалось обновить подписку для {telegram_id}")
                     return
-                
+
                 logging.info(f"✅ Первая покупка обработана для {telegram_id}: создана подписка на {total_days} дней (+ 3 дня бонуса)")
-            
+
+                # Отмечаем платеж как обработанный только после успешного начисления дней
+                try:
+                    await mark_payment_as_processed(payment_id)
+                except Exception as e:
+                    logging.error(f"❌ Не удалось пометить платеж {payment_id} как обработанный: {e}")
+
             else:
                 # Это повторная покупка — просто продлеваем подписку
                 email = user.get('email')
-                
+
                 try:
                     success = await update_client_subscription(email=email, added_days=added_days, new_ip_limit=devices)
                 except Exception as e:
                     success = False
                     logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
-                
+
                 if not success:
                     await callback.message.edit_text(
                         "❌ Платеж принят, но не удалось продлить подписку.\n\n"
@@ -392,7 +409,13 @@ def register_handlers(dp):
                     )
                     logging.error(f"❌ Ошибка обновления подписки для {telegram_id}")
                     return
-                
+
+                # Отмечаем платеж как обработанный после успешного продления
+                try:
+                    await mark_payment_as_processed(payment_id)
+                except Exception as e:
+                    logging.error(f"❌ Не удалось пометить платеж {payment_id} как обработанный: {e}")
+
                 logging.info(f"✅ Подписка продлена для {telegram_id} на {added_days} дней")
 
             # Отправляем финальное сообщение, инструкцию и ссылку подписки
