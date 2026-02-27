@@ -461,7 +461,7 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 
         result_a = await _xui_request(
             "post",
-            f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
+            f"/panel/api/inbounds/updateClient/{client_uuid}",
             json=client_payload
         )
 
@@ -540,7 +540,7 @@ async def enable_client(email: str) -> bool:
 
         result = await _xui_request(
             "post",
-            f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
+            f"/panel/api/inbounds/updateClient/{client_uuid}",
             json={"id": inbound_id, "settings": json.dumps({"clients": [client_obj]})}
         )
         success = isinstance(result, dict) and result.get("success", False)
@@ -587,7 +587,7 @@ async def disable_client(email: str) -> bool:
 
         result = await _xui_request(
             "post",
-            f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
+            f"/panel/api/inbounds/updateClient/{client_uuid}",
             json={"id": inbound_id, "settings": json.dumps({"clients": [client_obj]})}
         )
         success = isinstance(result, dict) and result.get("success", False)
