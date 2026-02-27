@@ -237,7 +237,9 @@ async def get_client_stats(email: str):
 
 async def update_client_subscription(email: str, added_days: int, new_ip_limit: int) -> bool:
     """
-    Продлевает подписку клиента, обновляя полный inbound с новым expiryTime.
+    Продлевает подписку клиента.
+    Шаг 1: обновляет клиента через /updateClient/{uuid} (expiryTime + limitIp).
+    Шаг 2: обновляет inbound-level expiryTime через /update/{inbound_id}.
     """
     global xui_cookie
     if not xui_cookie:
@@ -246,79 +248,87 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
     headers = {"Content-Type": "application/json", "Cookie": xui_cookie}
 
     try:
-        # 1. Получаем inbound_id из БД
+        # 1. Получаем данные пользователя из БД
         user_data = await get_user_by_telegram_id(int(email))
         if not user_data:
             logging.error(f"❌ Пользователь {email} не найден в БД при обновлении")
             return False
 
-        inbound_id = user_data.get("inbound_id") if hasattr(user_data, 'get') else user_data['inbound_id'] if 'inbound_id' in user_data else None
-        
+        inbound_id = user_data.get("inbound_id")
+        client_uuid = user_data.get("uuid")
+
         if not inbound_id:
             logging.error(f"❌ inbound_id не найден для пользователя {email}")
             return False
 
-        # 2. Получаем полные данные существующего inbound
+        if not client_uuid:
+            logging.error(f"❌ uuid клиента не найден для пользователя {email}")
+            return False
+
+        # 2. Получаем полные данные inbound с панели
         inbound_data = await get_inbound(inbound_id)
         if not inbound_data:
             logging.error(f"❌ Не удалось получить данные inbound {inbound_id}")
             return False
 
-        logging.debug(f"update_client_subscription: inbound_data keys: {inbound_data.keys() if isinstance(inbound_data, dict) else 'N/A'}")
-
         # 3. Вычисляем новое время истечения
         now = int(time.time() * 1000)
         new_expiry = now + (added_days * 86400000)
-        
-        logging.info(f"📝 Обновляю подписку: inbound_id={inbound_id}, email={email}, new_expiry={new_expiry}, new_ip_limit={new_ip_limit}")
 
-        # 4. Парсим settings и обновляем clients
+        logging.info(
+            f"📝 Обновляю подписку: inbound_id={inbound_id}, uuid={client_uuid}, "
+            f"email={email}, new_expiry={datetime.fromtimestamp(new_expiry/1000)}, "
+            f"new_ip_limit={new_ip_limit}"
+        )
+
+        # 4. Парсим settings чтобы найти полный объект клиента
         try:
-            if isinstance(inbound_data.get("settings"), str):
-                settings = json.loads(inbound_data["settings"])
+            raw_settings = inbound_data.get("settings")
+            if isinstance(raw_settings, str):
+                settings = json.loads(raw_settings)
             else:
-                settings = inbound_data.get("settings", {})
-            
-            if not isinstance(settings, dict):
-                settings = {}
-            
+                settings = raw_settings or {}
+
             clients = settings.get("clients", [])
-            
-            # Обновляем expiryTime и limitIp для всех клиентов
-            for client in clients:
-                if isinstance(client, dict):
-                    client["expiryTime"] = new_expiry
-                    client["limitIp"] = int(new_ip_limit)
-            
-            settings["clients"] = clients
-            
+            # Находим нашего клиента по uuid
+            client_obj = next((c for c in clients if c.get("id") == client_uuid), None)
+
+            if not client_obj:
+                # Если не нашли — создаём минимальный объект на основе данных из БД
+                logging.warning(f"⚠️ Клиент {client_uuid} не найден в settings inbound {inbound_id}, создаю минимальный объект")
+                client_obj = {
+                    "id": client_uuid,
+                    "flow": "xtls-rprx-vision",
+                    "email": email,
+                    "enable": True,
+                    "tgId": email,
+                    "subId": user_data.get("short_id", ""),
+                    "totalGB": 0,
+                }
+
+            # Обновляем нужные поля клиента
+            client_obj["expiryTime"] = new_expiry
+            client_obj["limitIp"] = int(new_ip_limit)
+            client_obj["enable"] = True
+
         except Exception as ex:
-            logging.error(f"❌ Ошибка при обновлении settings: {ex}")
+            logging.error(f"❌ Ошибка при разборе settings inbound {inbound_id}: {ex}")
             return False
 
-        # 5. Формируем полный payload для обновления
-        payload = {
+        # ──────────────────────────────────────────────────────────────
+        # ШАГ A: Обновляем КЛИЕНТА через /updateClient/{uuid}
+        # Это ключевой эндпоинт, который обновляет expiryTime клиента в панели
+        # ──────────────────────────────────────────────────────────────
+        client_payload = {
             "id": inbound_id,
-            "up": inbound_data.get("up", 0),
-            "down": inbound_data.get("down", 0),
-            "total": inbound_data.get("total", 0),
-            "remark": inbound_data.get("remark", email),
-            "enable": inbound_data.get("enable", True),
-            "expiryTime": new_expiry,
-            "listen": inbound_data.get("listen", ""),
-            "port": inbound_data.get("port"),
-            "protocol": inbound_data.get("protocol", "vless"),
-            "settings": json.dumps(settings),
-            "streamSettings": inbound_data.get("streamSettings", "{}"),
-            "sniffing": inbound_data.get("sniffing", "{}")
+            "settings": json.dumps({"clients": [client_obj]})
         }
 
-        # 6. Отправляем обновление
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{XUI_API}/panel/api/inbounds/update/{inbound_id}",
+                f"{XUI_API}/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
                 headers=headers,
-                json=payload,
+                json=client_payload,
                 ssl=False
             ) as resp:
                 status = resp.status
@@ -326,17 +336,84 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
                     data = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    logging.error(f"❌ Ошибка парсинга JSON от XUI (status={status}) для {email}: {text}")
+                    logging.error(f"❌ Ошибка парсинга JSON от /updateClient (status={status}): {text}")
                     return False
 
-                logging.debug(f"update_client_subscription: response status={status}, data={repr(data)}")
+                if not (isinstance(data, dict) and data.get("success")):
+                    logging.error(f"❌ /updateClient вернул ошибку (status={status}): {repr(data)}")
+                    return False
+
+                logging.info(f"✅ Клиент {client_uuid} обновлён через /updateClient")
+
+        # ──────────────────────────────────────────────────────────────
+        # ШАГ B: Обновляем inbound-level expiryTime через /update/{id}
+        # Чтобы в колонке Duration панели тоже отображалось корректное время
+        # ──────────────────────────────────────────────────────────────
+
+        # Формируем актуальный settings со всеми клиентами (включая обновлённый)
+        updated_clients = []
+        found = False
+        for c in clients:
+            if c.get("id") == client_uuid:
+                updated_clients.append(client_obj)
+                found = True
+            else:
+                updated_clients.append(c)
+        if not found:
+            updated_clients.append(client_obj)
+
+        settings["clients"] = updated_clients
+
+        # streamSettings и sniffing могут прийти как dict или строка — нормализуем
+        stream = inbound_data.get("streamSettings", {})
+        sniff = inbound_data.get("sniffing", {})
+
+        inbound_payload = {
+            "id": inbound_id,
+            "up": inbound_data.get("up", 0),
+            "down": inbound_data.get("down", 0),
+            "total": inbound_data.get("total", 0),
+            "remark": inbound_data.get("remark", email),
+            "enable": True,
+            "expiryTime": new_expiry,
+            "listen": inbound_data.get("listen", ""),
+            "port": inbound_data.get("port"),
+            "protocol": inbound_data.get("protocol", "vless"),
+            "settings": json.dumps(settings),
+            "streamSettings": json.dumps(stream) if isinstance(stream, dict) else stream,
+            "sniffing": json.dumps(sniff) if isinstance(sniff, dict) else sniff,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{XUI_API}/panel/api/inbounds/update/{inbound_id}",
+                headers=headers,
+                json=inbound_payload,
+                ssl=False
+            ) as resp:
+                status = resp.status
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    logging.error(f"❌ Ошибка парсинга JSON от /update (status={status}): {text}")
+                    # Шаг A уже прошёл успешно — клиент обновлён, считаем успехом
+                    return True
 
                 if isinstance(data, dict) and data.get("success"):
-                    logging.info(f"✅ Подписка продлена для {email}. Новая дата: {datetime.fromtimestamp(new_expiry/1000)}")
+                    logging.info(
+                        f"✅ Подписка полностью продлена для {email}. "
+                        f"Новая дата: {datetime.fromtimestamp(new_expiry/1000)}"
+                    )
                     return True
                 else:
-                    logging.error(f"❌ Ошибка API при обновлении (status={status}): {repr(data)}")
-                    return False
+                    # Шаг A прошёл — клиент обновлён. Inbound expiry не обновился,
+                    # но это некритично — клиент всё равно будет работать.
+                    logging.warning(
+                        f"⚠️ /update inbound вернул ошибку, но клиент уже обновлён "
+                        f"через /updateClient. status={status}, data={repr(data)}"
+                    )
+                    return True
 
     except Exception as e:
         logging.error(f"❌ Критическая ошибка update_client_subscription: {e}", exc_info=True)
