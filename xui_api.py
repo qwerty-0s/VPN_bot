@@ -63,12 +63,18 @@ async def _xui_request(method: str, path: str, **kwargs):
                         logging.warning("⚠️ XUI вернул 401 — переавторизуемся...")
                         await get_xui_cookie()
                         continue
+                    if resp.status not in (200, 201):
+                        text = await resp.text()
+                        logging.error(
+                            f"❌ XUI вернул HTTP {resp.status} для {path}: {text[:300]}"
+                        )
+                        return None
                     try:
                         return await resp.json(content_type=None)
                     except Exception:
                         text = await resp.text()
                         logging.error(
-                            f"❌ Ошибка парсинга JSON от XUI [{resp.status}] {path}: {text[:200]}"
+                            f"❌ Ошибка парсинга JSON от XUI [{resp.status}] {path}: {text[:300]}"
                         )
                         return None
         except Exception as e:
@@ -80,13 +86,18 @@ async def _xui_request(method: str, path: str, **kwargs):
 
 async def get_new_reality_keys():
     """Получение новых ключей для Reality"""
-    return await _xui_request("get", "/panel/api/server/getNewX25519Cert")
+    data = await _xui_request("get", "/panel/api/server/getNewX25519Cert")
+    if not data or "obj" not in data:
+        logging.error(f"❌ Не удалось получить Reality ключи. Ответ: {data}")
+        return None
+    return data
 
 
 async def get_free_port():
     """Получение свободного порта"""
     data = await _xui_request("get", "/panel/api/inbounds/list")
     if not data:
+        logging.error("❌ Не удалось получить список inbound для поиска свободного порта")
         return None
     try:
         used_ports = {int(i["port"]) for i in data.get("obj", []) if "port" in i}
@@ -94,9 +105,91 @@ async def get_free_port():
             port = random.randint(10000, 65000)
             if port not in used_ports:
                 return port
+        logging.error("❌ Не удалось найти свободный порт после 1000 попыток")
         return None
-    except Exception:
+    except Exception as e:
+        logging.error(f"❌ Ошибка при поиске свободного порта: {e}")
         return None
+
+
+async def find_and_sync_user_from_xui(telegram_id: int) -> dict | None:
+    """
+    Ищет пользователя в XUI панели по email (telegram_id) и синхронизирует в БД.
+    Используется для восстановления при расхождении XUI↔БД.
+
+    Returns:
+        dict с данными пользователя (как create_client_inbound) или None
+    """
+    email = str(telegram_id)
+    logging.info(f"🔍 Ищу пользователя {email} в XUI панели для синхронизации...")
+
+    data = await _xui_request("get", "/panel/api/inbounds/list")
+    if not data or not data.get("success"):
+        logging.error("❌ Не удалось получить список inbound для синхронизации")
+        return None
+
+    inbounds = data.get("obj", [])
+    for inbound in inbounds:
+        try:
+            raw_settings = inbound.get("settings")
+            if not raw_settings:
+                continue
+            settings = json.loads(raw_settings) if isinstance(raw_settings, str) else raw_settings
+            clients = settings.get("clients", [])
+
+            for client in clients:
+                if str(client.get("email", "")) != email:
+                    continue
+
+                # Нашли клиента! Извлекаем все данные
+                client_uuid = client.get("id")
+                short_id = client.get("subId", "")
+                expiry_time = client.get("expiryTime", 0)
+                ip_limit = client.get("limitIp", 1)
+                inbound_id = inbound.get("id")
+                port = inbound.get("port")
+
+                # Извлекаем publicKey из streamSettings для полноты
+                raw_stream = inbound.get("streamSettings", {})
+                stream = json.loads(raw_stream) if isinstance(raw_stream, str) else raw_stream
+                public_key = (
+                    stream.get("realitySettings", {})
+                    .get("settings", {})
+                    .get("publicKey", "")
+                )
+
+                logging.info(
+                    f"✅ Найден пользователь {email} в XUI: "
+                    f"inbound_id={inbound_id}, uuid={client_uuid}, port={port}"
+                )
+
+                # Сохраняем в БД
+                await save_user(
+                    telegram_id=telegram_id,
+                    uuid=client_uuid,
+                    email=email,
+                    port=port,
+                    expiry_time=expiry_time if expiry_time else 0,
+                    short_id=short_id,
+                    ip_limit=ip_limit,
+                    is_active=True,
+                    inbound_id=inbound_id,
+                )
+
+                return {
+                    "uuid": client_uuid,
+                    "publicKey": public_key,
+                    "port": port,
+                    "short_id": short_id,
+                    "inbound_id": inbound_id,
+                    "recovered": True,  # Флаг что это восстановление, а не новое создание
+                }
+        except Exception as e:
+            logging.warning(f"⚠️ Ошибка при разборе inbound {inbound.get('id')}: {e}")
+            continue
+
+    logging.warning(f"⚠️ Пользователь {email} не найден ни в одном inbound XUI")
+    return None
 
 
 async def create_client_inbound(telegram_id: int):
@@ -105,7 +198,8 @@ async def create_client_inbound(telegram_id: int):
         return {"error": "already_exists"}
 
     keys = await get_new_reality_keys()
-    if not keys or "obj" not in keys:
+    if not keys:
+        # get_new_reality_keys уже залогировал ошибку
         return None
 
     private_key = keys["obj"]["privateKey"]
@@ -119,6 +213,7 @@ async def create_client_inbound(telegram_id: int):
     port = await get_free_port()
 
     if not port:
+        # get_free_port уже залогировал ошибку
         return None
 
     # Настройки JSON для inbound
@@ -166,33 +261,58 @@ async def create_client_inbound(telegram_id: int):
 
     try:
         data = await _xui_request("post", "/panel/api/inbounds/add", json=payload)
-        if data and data.get("success"):
-            inbound_id = None
-            if data.get("obj") and isinstance(data["obj"], dict):
-                inbound_id = data["obj"].get("id")
 
-            await save_user(
-                telegram_id=telegram_id,
-                uuid=client_uuid,
-                email=email,
-                port=port,
-                expiry_time=expiry,
-                short_id=short_id,
-                ip_limit=1,
-                is_active=True,
-                inbound_id=inbound_id
-            )
-            return {
-                "uuid": client_uuid,
-                "publicKey": public_key,
-                "port": port,
-                "short_id": short_id,
-                "inbound_id": inbound_id,
-                "server": data.get("obj", {}).get("listen", "")
-            }
-        return None
+        if data is None:
+            # _xui_request уже залогировал ошибку
+            logging.error(f"❌ create_client_inbound: запрос к XUI вернул None для {telegram_id}")
+            return None
+
+        if not data.get("success"):
+            msg = data.get("msg", "неизвестная ошибка")
+            logging.error(f"❌ XUI отказал при создании inbound для {telegram_id}: {msg}")
+
+            # Если XUI говорит что email уже существует — синхронизируем из панели
+            if "email" in msg.lower() or "exist" in msg.lower() or "already" in msg.lower():
+                logging.warning(
+                    f"⚠️ Email {email} уже существует в XUI, но не в БД. "
+                    f"Пробую синхронизировать..."
+                )
+                return await find_and_sync_user_from_xui(telegram_id)
+
+            return None
+
+        inbound_id = None
+        if data.get("obj") and isinstance(data["obj"], dict):
+            inbound_id = data["obj"].get("id")
+
+        if not inbound_id:
+            logging.error(f"❌ XUI не вернул inbound_id после создания для {telegram_id}. Ответ: {data}")
+            return None
+
+        await save_user(
+            telegram_id=telegram_id,
+            uuid=client_uuid,
+            email=email,
+            port=port,
+            expiry_time=expiry,
+            short_id=short_id,
+            ip_limit=1,
+            is_active=True,
+            inbound_id=inbound_id,
+        )
+
+        logging.info(f"✅ Inbound создан для {telegram_id}: inbound_id={inbound_id}, port={port}")
+        return {
+            "uuid": client_uuid,
+            "publicKey": public_key,
+            "port": port,
+            "short_id": short_id,
+            "inbound_id": inbound_id,
+            "server": data.get("obj", {}).get("listen", ""),
+        }
+
     except Exception as e:
-        logging.error(f"❌ Ошибка при создании inbound: {e}")
+        logging.error(f"❌ Исключение при создании inbound для {telegram_id}: {e}", exc_info=True)
         return None
 
 
@@ -226,7 +346,8 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 
     Args:
         email:        telegram_id пользователя в строковом виде (так хранится в XUI)
-        added_days:   количество дней от СЕГОДНЯ (не от текущего expiry)
+        added_days:   количество дней, добавляемых к текущему expiry (если активен)
+                      или от сегодня (если уже истёк)
         new_ip_limit: лимит одновременных устройств
     """
     try:
@@ -299,26 +420,7 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
         client_obj["limitIp"] = int(new_ip_limit)
         client_obj["enable"] = True
 
-        # ── ШАГ A: обновляем клиента через dedicated endpoint ─────────────────
-        client_payload = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_obj]})
-        }
-
-        result = await _xui_request(
-            "post",
-            f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
-            json=client_payload
-        )
-
-        if not (isinstance(result, dict) and result.get("success")):
-            logging.error(f"❌ /updateClient вернул ошибку: {repr(result)}")
-            return False
-
-        logging.info(f"✅ Клиент {client_uuid} обновлён через /updateClient")
-
-        # ── ШАГ B: обновляем inbound-level expiry ─────────────────────────────
-        # Собираем обновлённый список клиентов
+        # Собираем обновлённый список клиентов для full-inbound payload
         updated_clients = []
         found = False
         for c in clients:
@@ -331,7 +433,6 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
             updated_clients.append(client_obj)
         settings["clients"] = updated_clients
 
-        # Нормализуем streamSettings и sniffing (могут прийти как dict или str)
         stream = inbound_data.get("streamSettings", {})
         sniff = inbound_data.get("sniffing", {})
 
@@ -351,6 +452,41 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
             "sniffing": json.dumps(sniff) if isinstance(sniff, dict) else sniff,
         }
 
+        # ── ШАГ A: пробуем /updateClient/{uuid} ───────────────────────────────
+        # Этот эндпоинт обновляет клиента точечно и есть в новых версиях XUI.
+        client_payload = {
+            "id": inbound_id,
+            "settings": json.dumps({"clients": [client_obj]})
+        }
+
+        result_a = await _xui_request(
+            "post",
+            f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
+            json=client_payload
+        )
+
+        if isinstance(result_a, dict) and result_a.get("success"):
+            logging.info(f"✅ Клиент {client_uuid} обновлён через /updateClient (шаг A)")
+            # Шаг A успешен — дополнительно обновляем inbound для актуальности UI
+            result_b = await _xui_request(
+                "post",
+                f"/panel/api/inbounds/update/{inbound_id}",
+                json=inbound_payload
+            )
+            if not (isinstance(result_b, dict) and result_b.get("success")):
+                logging.warning(f"⚠️ /update inbound (шаг B) вернул ошибку: {repr(result_b)} — некритично")
+            logging.info(
+                f"✅ Подписка продлена для {email}. "
+                f"Новая дата: {datetime.fromtimestamp(new_expiry / 1000)}"
+            )
+            return True
+
+        # ── ШАГ B (fallback): /updateClient недоступен — используем полный /update ──
+        logging.warning(
+            f"⚠️ /updateClient недоступен или вернул ошибку ({repr(result_a)}), "
+            f"используем fallback /update/{inbound_id}"
+        )
+
         result_b = await _xui_request(
             "post",
             f"/panel/api/inbounds/update/{inbound_id}",
@@ -359,17 +495,14 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 
         if isinstance(result_b, dict) and result_b.get("success"):
             logging.info(
-                f"✅ Подписка полностью продлена для {email}. "
+                f"✅ Подписка продлена через fallback /update для {email}. "
                 f"Новая дата: {datetime.fromtimestamp(new_expiry / 1000)}"
             )
-        else:
-            # Шаг A прошёл — клиент работает. Шаг B некритичен.
-            logging.warning(
-                f"⚠️ Шаг B (/update inbound) вернул ошибку, но клиент уже обновлён "
-                f"через /updateClient. data={repr(result_b)}"
-            )
+            return True
 
-        return True
+        logging.error(f"❌ Оба метода обновления не сработали для {email}. "
+                      f"updateClient={repr(result_a)}, update={repr(result_b)}")
+        return False
 
     except Exception as e:
         logging.error(f"❌ Критическая ошибка update_client_subscription: {e}", exc_info=True)
@@ -379,7 +512,6 @@ async def update_client_subscription(email: str, added_days: int, new_ip_limit: 
 async def enable_client(email: str) -> bool:
     """
     Включает клиента (enable: true), не меняя дату истечения и лимит устройств.
-    Берёт актуальные данные из XUI панели.
     """
     try:
         user_data = await get_user_by_telegram_id(int(email))
@@ -406,15 +538,10 @@ async def enable_client(email: str) -> bool:
 
         client_obj["enable"] = True
 
-        client_payload = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_obj]})
-        }
-
         result = await _xui_request(
             "post",
             f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
-            json=client_payload
+            json={"id": inbound_id, "settings": json.dumps({"clients": [client_obj]})}
         )
         success = isinstance(result, dict) and result.get("success", False)
         if success:
@@ -431,7 +558,6 @@ async def enable_client(email: str) -> bool:
 async def disable_client(email: str) -> bool:
     """
     Отключает клиента (enable: false), не меняя дату истечения и лимит устройств.
-    Берёт актуальные данные из XUI панели.
     """
     try:
         user_data = await get_user_by_telegram_id(int(email))
@@ -459,15 +585,10 @@ async def disable_client(email: str) -> bool:
 
         client_obj["enable"] = False
 
-        client_payload = {
-            "id": inbound_id,
-            "settings": json.dumps({"clients": [client_obj]})
-        }
-
         result = await _xui_request(
             "post",
             f"/panel/api/inbounds/{inbound_id}/updateClient/{client_uuid}",
-            json=client_payload
+            json={"id": inbound_id, "settings": json.dumps({"clients": [client_obj]})}
         )
         success = isinstance(result, dict) and result.get("success", False)
         if success:
