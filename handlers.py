@@ -1,145 +1,149 @@
 """Обработчики сообщений для Telegram бота"""
 import logging
-from aiogram import F, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
-from xui_api import create_client_inbound, update_client_subscription
-from yookassa_pay import create_payment_link, check_payment_status
-from database import (
-    save_payment, update_payment, get_user_by_telegram_id,
-    get_payment_by_id, mark_payment_as_processed
-)
-from config import FRONT_DOMAIN, TARIFFS
 import os
 
+from aiogram import F, types
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputMediaPhoto,
+)
 
-# Главное меню (для обычных пользователей)
+from xui_api import create_client_inbound
+from yookassa_pay import create_payment_link
+from database import save_payment, get_user_by_telegram_id
+from config import FRONT_DOMAIN, TARIFFS
+
+
+# Главное меню
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="💎 Купить подписку")],
         [KeyboardButton(text="🚀 Пробная подписка"), KeyboardButton(text="👤 Мой профиль")],
         [KeyboardButton(text="⚙️ Техподдержка")],
-        [KeyboardButton(text="📋 Пользовательское соглашение")]
+        [KeyboardButton(text="📋 Пользовательское соглашение")],
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
 )
 
 
 async def send_subscription_with_instructions(message_or_callback, link: str, short_id: str):
-    """Отправляет две инструкции и ссылку на подписку в одном сообщении"""
+    """
+    Отправляет ссылку на подписку с инструкциями.
+    Принимает как types.Message, так и types.CallbackQuery.
+    Используется для пробных подписок (активируются без оплаты).
+    """
+    subscription_text = (
+        "✅ *Подписка активирована!*\n\n"
+        "🔗 Ваша ссылка на подписку:\n"
+        f"`{link}`\n\n"
+        "1️⃣ Установите V2RayTun https://v2raytun.com/\n"
+        "2️⃣ Скопируйте ссылку, кликнув по ней\n"
+        "3️⃣ Вставьте ссылку в V2RayTun и подключитесь\n"
+    )
+
+    instr1_path = "Instruction1.jpg"
+    instr2_path = "Instruction2.jpg"
+
+    # Определяем объект для отправки сообщений
+    target = (
+        message_or_callback.message
+        if hasattr(message_or_callback, "message")
+        else message_or_callback
+    )
+
     try:
-        # Подготавливаем текст с ссылкой и инструкциями
-        subscription_text = (
-            "✅ *Подписка активирована!*\n\n"
-            "🔗 Ваша ссылка на подписку:\n"
-            f"`{link}`\n\n"
-            "1️⃣ установите V2RayTun https://v2raytun.com/ \n"
-            "2️⃣ скопируйте ссылку, кликнув по ней \n"
-            "3️⃣ вставьте ссылку в V2RayTun и подключитесь\n"
-        )
-        
-        # Проверяем существование файлов инструкций
-        instr1_path = 'Instruction1.jpg'
-        instr2_path = 'Instruction2.jpg'
-        
         if os.path.exists(instr1_path) and os.path.exists(instr2_path):
-            # Создаем media_group с двумя изображениями
             media_group = [
                 InputMediaPhoto(
                     media=types.FSInputFile(instr1_path),
                     caption=subscription_text,
-                    parse_mode="Markdown"
+                    parse_mode="Markdown",
                 ),
-                InputMediaPhoto(
-                    media=types.FSInputFile(instr2_path)
-                )
+                InputMediaPhoto(media=types.FSInputFile(instr2_path)),
             ]
-            
-            # Отправляем группу медиа
-            if hasattr(message_or_callback, 'message'):
-                # Это callback_query
-                await message_or_callback.message.answer_media_group(media=media_group)
-            else:
-                # Это обычное сообщение
-                await message_or_callback.answer_media_group(media=media_group)
-            
-            logging.info(f"✅ Отправлены две инструкции с ссылкой {short_id}")
+            await target.answer_media_group(media=media_group)
+            logging.info(f"✅ Отправлены инструкции с ссылкой {short_id}")
         else:
-            # Если файлов инструкций нет, отправляем просто текст
-            if hasattr(message_or_callback, 'message'):
-                await message_or_callback.message.answer(subscription_text, parse_mode="Markdown")
-            else:
-                await message_or_callback.answer(subscription_text, parse_mode="Markdown")
-            
-            logging.warning(f"⚠️ Файлы инструкций не найдены, отправлен только текст для {short_id}")
+            await target.answer(subscription_text, parse_mode="Markdown")
+            logging.warning(
+                f"⚠️ Файлы инструкций не найдены, отправлен только текст для {short_id}"
+            )
     except Exception as e:
         logging.error(f"❌ Ошибка при отправке подписки с инструкциями: {e}")
 
 
 def get_devices_keyboard():
-    """Создает inline-клавиатуру для выбора кол-ва устройств"""
-    keyboard = [
-        [InlineKeyboardButton(text="1 устройство", callback_data="devices_1")],
-        [InlineKeyboardButton(text="3 устройства", callback_data="devices_3")],
-        [InlineKeyboardButton(text="5 устройств", callback_data="devices_5")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    """Inline-клавиатура для выбора количества устройств."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="1 устройство", callback_data="devices_1")],
+            [InlineKeyboardButton(text="3 устройства", callback_data="devices_3")],
+            [InlineKeyboardButton(text="5 устройств", callback_data="devices_5")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")],
+        ]
+    )
 
 
 def get_months_keyboard(devices: int):
-    """Создает inline-клавиатуру для выбора срока на основе выбранных устройств"""
+    """Inline-клавиатура для выбора срока подписки."""
     keyboard = []
-    
-    # Ищем все тарифы для выбранного кол-ва устройств
     for (months, dev), tariff_info in sorted(TARIFFS.items()):
         if dev == devices:
-            price = tariff_info['price']
-            button_text = f"{months} месяц(-а/-ев) - {price}₽"
-            callback_data = f"month_{months}m_{devices}d"
-            keyboard.append([InlineKeyboardButton(text=button_text, callback_data=callback_data)])
-    
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_devices")])
-    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")])
-    
+            price = tariff_info["price"]
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{months} месяц(-а/-ев) — {price}₽",
+                        callback_data=f"month_{months}m_{devices}d",
+                    )
+                ]
+            )
+    keyboard.append(
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_devices")]
+    )
+    keyboard.append(
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_buy")]
+    )
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def register_handlers(dp):
-    """Регистрация всех обработчиков"""
-    
+    """Регистрация всех обработчиков."""
+
+    # ── /start ────────────────────────────────────────────────────────────────
+
     @dp.message(F.text == "/start")
     async def start_handler(message: types.Message):
-        user_id = message.from_user.id
         user_name = message.from_user.first_name or "пользователь"
-        
         await message.answer(
             f"Здравствуйте, {user_name}!\n\n"
             "Здесь вы можете получить VPN\n\n"
             "Выберите действие ниже:",
-            reply_markup=main_menu
+            reply_markup=main_menu,
         )
-        logging.info(f"👤 Пользователь {user_id} нажал /start")
-    
-    # ======================== ПРОБНАЯ ПОДПИСКА ========================
-    
+        logging.info(f"👤 Пользователь {message.from_user.id} нажал /start")
+
+    # ── Пробная подписка ──────────────────────────────────────────────────────
+
     @dp.message(F.text == "🚀 Пробная подписка")
     async def trial_button(message: types.Message):
         telegram_id = message.from_user.id
-        
-        # Проверяем, есть ли уже подписка
+
         user = await get_user_by_telegram_id(telegram_id)
-        
         if user:
             await message.answer(
                 "⚠️ У вас уже есть подписка!\n\n"
                 "Для создания новой пробной подписки свяжитесь с техподдержкой."
             )
-            logging.warning(f"⚠️ Пользователь {telegram_id} попытался создать подписку, но она уже существует")
+            logging.warning(
+                f"⚠️ Пользователь {telegram_id} попытался создать вторую подписку"
+            )
             return
-        
-        # Создаем пробную подписку (3 дня)
+
         result = await create_client_inbound(telegram_id)
-        
         if not result or result.get("error"):
             await message.answer("❌ Не удалось создать пробную подписку.")
             logging.error(f"❌ Ошибка создания пробной подписки для {telegram_id}")
@@ -147,137 +151,119 @@ def register_handlers(dp):
 
         short_id = result["short_id"]
         link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
-
         await send_subscription_with_instructions(message, link, short_id)
-        logging.info(f"✅ Пробная подписка создана для пользователя {telegram_id}")
-    
-    # ======================== ПОКУПКА ПОДПИСКИ (ДВУХУРОВНЕВОЕ МЕНЮ) ========================
-    
+        logging.info(f"✅ Пробная подписка создана для {telegram_id}")
+
+    # ── Покупка подписки: выбор устройств ─────────────────────────────────────
+
     @dp.message(F.text == "💎 Купить подписку")
     async def buy_subscription(message: types.Message):
-        telegram_id = message.from_user.id
-        
         await message.answer(
             "🛒 *Выберите кол-во устройств:*\n\n"
-            "Это определит, сколько девайсов смогут одновременно использовать вашу подписку.",
+            "Это определит, сколько устройств смогут одновременно использовать вашу подписку.",
             reply_markup=get_devices_keyboard(),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-        logging.info(f"👤 Пользователь {telegram_id} открыл меню покупки подписки")
-    
-    # Уровень 1: Выбор кол-ва устройств
+        logging.info(f"👤 Пользователь {message.from_user.id} открыл меню покупки")
+
     @dp.callback_query(F.data.startswith("devices_"))
     async def devices_selected(callback: types.CallbackQuery):
-        telegram_id = callback.from_user.id
         devices = int(callback.data.replace("devices_", ""))
-        
         await callback.answer()
         await callback.message.edit_text(
             f"📱 *Вы выбрали: {devices} устройств*\n\n"
             "⏱️ Теперь выберите срок подписки:",
             reply_markup=get_months_keyboard(devices),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-        logging.info(f"👤 Пользователь {telegram_id} выбрал {devices} устройств")
-    
-    # Уровень 2: Выбор срока (месяцев)
+        logging.info(f"👤 Пользователь {callback.from_user.id} выбрал {devices} устройств")
+
+    # ── Покупка подписки: выбор срока → создание платежа ─────────────────────
+
     @dp.callback_query(F.data.startswith("month_"))
     async def month_selected(callback: types.CallbackQuery):
         telegram_id = callback.from_user.id
-        
-        # Парсим callback data: "month_1m_1d" -> months=1, devices=1
-        data_parts = callback.data.replace("month_", "").split("_")
-        months = int(data_parts[0][:-1])  # "1m" -> 1
-        devices = int(data_parts[1][:-1])  # "1d" -> 1
-        
-        # Получаем информацию о тарифе
+
+        # Парсим callback data: "month_1m_1d" → months=1, devices=1
+        parts = callback.data.replace("month_", "").split("_")
+        months = int(parts[0][:-1])   # "1m" → 1
+        devices = int(parts[1][:-1])  # "1d" → 1
+
         tariff = TARIFFS.get((months, devices))
         if not tariff:
             await callback.answer("❌ Неверный тариф")
-            logging.error(f"❌ Неверный тариф: {months}м_{devices}d для пользователя {telegram_id}")
+            logging.error(
+                f"❌ Неверный тариф {months}м/{devices}д для пользователя {telegram_id}"
+            )
             return
-        
-        price = tariff['price']
-        days = tariff['days']
-        amount_in_kopecks = price * 100  # Конвертируем в копейки
-        
-        # Описание платежа
+
+        price = tariff["price"]
+        days = tariff["days"]
+        amount_kopecks = price * 100
         description = f"{months} мес. / {devices} устр."
-        
-        # Метаданные для платежа
         metadata = {
             "telegram_id": telegram_id,
             "tariff": f"{months}m_{devices}d",
             "days": days,
-            "devices": devices
+            "devices": devices,
         }
-        
+
         await callback.answer()
-        
-        # Отправляем сообщение о создании платежа
         await callback.message.edit_text(
             f"⏳ Создаю платеж...\n\n"
             f"📦 Тариф: *{description}*\n"
             f"💰 Сумма: *{price}₽*",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-        
-        # Создаем платеж через ЮKassa
+
         payment_url, payment_id = await create_payment_link(
-            amount=amount_in_kopecks,
+            amount=amount_kopecks,
             description=description,
-            metadata=metadata
+            metadata=metadata,
         )
-        
+
         if not payment_url or not payment_id:
             await callback.message.edit_text(
                 "❌ Не удалось создать платеж. Попробуйте позже или обратитесь в поддержку."
             )
-            logging.error(f"❌ Ошибка создания платежа для пользователя {telegram_id}")
+            logging.error(f"❌ Ошибка создания платежа для {telegram_id}")
             return
-        
-        # Сохраняем платеж в БД
+
+        # Сохраняем платёж в БД — это также служит whitelist'ом для вебхука
         try:
             await save_payment(
                 payment_id=payment_id,
                 telegram_id=telegram_id,
-                amount=amount_in_kopecks,
+                amount=amount_kopecks,
                 tariff_data={"days": days, "devices": devices},
-                status="pending"
+                status="pending",
             )
-            logging.info(f"✅ Платеж {payment_id} сохранен в БД для пользователя {telegram_id}")
+            logging.info(f"✅ Платёж {payment_id} сохранён для {telegram_id}")
         except Exception as e:
-            logging.error(f"❌ Ошибка при сохранении платежа в БД: {e}")
-        
-        # Создаем inline-клавиатуру с кнопками
-        payment_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="💳 Перейти к оплате",
-                url=payment_url
-            )],
-            [InlineKeyboardButton(
-                text="✅ Проверить оплату",
-                callback_data=f"check_payment_{payment_id}"
-            )],
-            [InlineKeyboardButton(
-                text="❌ Отмена",
-                callback_data="cancel_payment"
-            )]
-        ])
-        
+            logging.error(f"❌ Ошибка сохранения платежа в БД: {e}")
+
+        # Клавиатура: только кнопка оплаты и отмена
+        # (проверка статуса убрана — активация происходит автоматически через вебхук)
+        payment_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_payment")],
+            ]
+        )
+
         await callback.message.edit_text(
             f"✅ *Платеж создан!*\n\n"
             f"📦 Тариф: *{description}*\n"
             f"💰 Сумма: *{price}₽*\n"
             f"🆔 ID платежа: `{payment_id}`\n\n"
-            "👇 Нажмите кнопку ниже для оплаты:",
+            "👇 После оплаты вы автоматически получите ссылку на подписку в этом чате.",
             reply_markup=payment_keyboard,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-        
-        logging.info(f"✅ Платеж {payment_id} создан для пользователя {telegram_id}, сумма: {price}₽")
-    
-    # Кнопка "Назад" в меню месяцев
+        logging.info(f"✅ Платёж {payment_id} создан для {telegram_id}, сумма: {price}₽")
+
+    # ── Навигация: назад к выбору устройств ──────────────────────────────────
+
     @dp.callback_query(F.data == "back_to_devices")
     async def back_to_devices(callback: types.CallbackQuery):
         await callback.answer()
@@ -285,216 +271,31 @@ def register_handlers(dp):
             "🛒 *Выберите кол-во устройств:*\n\n"
             "Это определит, сколько устройств смогут одновременно использовать вашу подписку.",
             reply_markup=get_devices_keyboard(),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-    
-    # Проверка статуса платежа
-    @dp.callback_query(F.data.startswith("check_payment_"))
-    async def check_payment(callback: types.CallbackQuery):
-        telegram_id = callback.from_user.id
-        payment_id = callback.data.replace("check_payment_", "")
 
-        await callback.answer("⏳ Проверяю статус платежа...")
+    # ── Отмена ────────────────────────────────────────────────────────────────
 
-        # Проверяем статус в ЮKassa
-        payment_info = await check_payment_status(payment_id)
-
-        if not payment_info:
-            await callback.message.edit_text(
-                "❌ Не удалось проверить статус платежа. Попробуйте позже."
-            )
-            logging.error(f"❌ Ошибка при проверке статуса платежа {payment_id}")
-            return
-
-        status = payment_info.get('status')
-
-        if status == 'succeeded':
-            # Prevent double spending: check if we've already processed this payment
-            try:
-                local_payment = await get_payment_by_id(payment_id)
-            except Exception as e:
-                local_payment = None
-                logging.error(f"❌ Ошибка при получении платежа из БД {payment_id}: {e}")
-
-            if local_payment and local_payment.get('status') == 'completed':
-                await callback.message.edit_text(
-                    "⚠️ Этот платеж уже был обработан. Если есть проблемы — свяжитесь с техподдержкой."
-                )
-                logging.warning(f"⚠️ Повторный запрос обработки платежа {payment_id} от {telegram_id}")
-                return
-
-            # Извлекаем метаданные тарифа
-            metadata = payment_info.get('metadata') or {}
-            added_days = int(metadata.get('days', 0))
-            devices = int(metadata.get('devices', 1))
-
-            # Получаем пользователя из БД по telegram_id
-            try:
-                user = await get_user_by_telegram_id(telegram_id)
-            except Exception as e:
-                user = None
-                logging.error(f"❌ Ошибка при получении пользователя {telegram_id} из БД: {e}")
-
-            # Если это первая покупка (пользователя нет в БД), создаем подписку
-            if not user:
-                total_days = added_days + 3
-
-                await callback.message.edit_text("⏳ Создаю вашу подписку...")
-
-                trial_result = await create_client_inbound(telegram_id)
-
-                if not trial_result or trial_result.get("error"):
-                    await callback.message.edit_text(
-                        "❌ Платеж принят, но не удалось создать подписку.\n\n"
-                        "Пожалуйста, свяжитесь с техподдержкой для ручной активации."
-                    )
-                    logging.error(f"❌ Не удалось создать подписку для {telegram_id}, результат: {trial_result}")
-                    return
-
-                logging.info(f"✅ Подписка создана для {telegram_id}, inbound_id: {trial_result.get('inbound_id')}")
-
-                # Получаем свежие данные пользователя из БД
-                import asyncio
-                await asyncio.sleep(0.5)  # Небольшая задержка для синхронизации БД
-
-                user = await get_user_by_telegram_id(telegram_id)
-                if not user:
-                    logging.error(f"❌ Не удалось получить данные пользователя {telegram_id} после создания. Проверьте БД.")
-                    await callback.message.edit_text(
-                        "❌ Ошибка при получении данных из базы. Свяжитесь с техподдержкой."
-                    )
-                    return
-
-                logging.info(f"✅ Данные пользователя получены: telegram_id={telegram_id}, email={user.get('email')}, inbound_id={user.get('inbound_id')}")
-
-                # Обновляем подписку с купленными днями + 3 дня бонуса
-                email = user.get('email')
-                try:
-                    logging.info(f"📝 Обновляю подписку: email={email}, added_days={total_days}, devices={devices}")
-                    success = await update_client_subscription(email=email, added_days=total_days, new_ip_limit=devices)
-                except Exception as e:
-                    success = False
-                    logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}", exc_info=True)
-
-                if not success:
-                    await callback.message.edit_text(
-                        "⚠️ Подписка создана, но не удалось применить купленные дни.\n\n"
-                        "Свяжитесь с техподдержкой."
-                    )
-                    logging.error(f"❌ Не удалось обновить подписку для {telegram_id}")
-                    return
-
-                logging.info(f"✅ Первая покупка обработана для {telegram_id}: создана подписка на {total_days} дней (+ 3 дня бонуса)")
-
-                # Отмечаем платеж как обработанный только после успешного начисления дней
-                try:
-                    await mark_payment_as_processed(payment_id)
-                except Exception as e:
-                    logging.error(f"❌ Не удалось пометить платеж {payment_id} как обработанный: {e}")
-
-            else:
-                # Это повторная покупка — просто продлеваем подписку
-                email = user.get('email')
-
-                try:
-                    success = await update_client_subscription(email=email, added_days=added_days, new_ip_limit=devices)
-                except Exception as e:
-                    success = False
-                    logging.error(f"❌ Ошибка при вызове update_client_subscription: {e}")
-
-                if not success:
-                    await callback.message.edit_text(
-                        "❌ Платеж принят, но не удалось продлить подписку.\n\n"
-                        "Пожалуйста, свяжитесь с техподдержкой."
-                    )
-                    logging.error(f"❌ Ошибка обновления подписки для {telegram_id}")
-                    return
-
-                # Отмечаем платеж как обработанный после успешного продления
-                try:
-                    await mark_payment_as_processed(payment_id)
-                except Exception as e:
-                    logging.error(f"❌ Не удалось пометить платеж {payment_id} как обработанный: {e}")
-
-                logging.info(f"✅ Подписка продлена для {telegram_id} на {added_days} дней")
-
-            # Отправляем финальное сообщение, инструкцию и ссылку подписки
-            await callback.message.edit_text(
-                "✅ Оплата прошла успешно! Подписка активирована/продлена.",
-                parse_mode="Markdown"
-            )
-
-            # Отправляем инструкцию в виде изображения, если есть
-            try:
-                instr_path = 'instruction.jpg'
-                if os.path.exists(instr_path):
-                    await callback.message.answer_photo(types.FSInputFile(instr_path), caption="Инструкция по подключению")
-            except Exception as e:
-                logging.warning(f"⚠️ Не удалось отправить instruction.jpg: {e}")
-
-            # Отправляем пользовательское соглашение в формате PDF если есть, иначе TXT
-            try:
-                pdf_path = 'user_agreement.pdf'
-                txt_path = 'user_agreement.txt'
-                if os.path.exists(pdf_path):
-                    await callback.message.answer_document(types.FSInputFile(pdf_path), caption="Пользовательское соглашение")
-                elif os.path.exists(txt_path):
-                    await callback.message.answer_document(types.FSInputFile(txt_path), caption="Пользовательское соглашение")
-            except Exception as e:
-                logging.warning(f"⚠️ Не удалось отправить пользовательское соглашение: {e}")
-
-            # Отправляем ссылку на подписку с двумя инструкциями
-            try:
-                short_id = user.get('short_id')
-                if short_id:
-                    link = f"https://{FRONT_DOMAIN}/sub/{short_id}"
-                    await send_subscription_with_instructions(callback, link, short_id)
-                else:
-                    logging.error(f"⚠️ short_id не найден для пользователя {telegram_id}")
-            except Exception as e:
-                logging.error(f"❌ Ошибка при отправке ссылки подписки пользователю {telegram_id}: {e}")
-
-            logging.info(f"✅ Платеж {payment_id} успешно принят и подписка обновлена для {telegram_id}")
-            
-        elif status == 'pending':
-            await callback.message.edit_text(
-                "⏳ *Платеж еще в процессе обработки.*\n\n"
-                "Попробуйте проверить позже.",
-                parse_mode="Markdown"
-            )
-            
-        elif status == 'canceled':
-            await callback.message.edit_text(
-                "❌ *Платеж отменен или истек срок действия.*\n\n"
-                "Вернитесь в меню и попробуйте снова.",
-                parse_mode="Markdown"
-            )
-            logging.warning(f"⚠️ Платеж {payment_id} отменен для пользователя {telegram_id}")
-    
-    # Отмена платежа / покупки
     @dp.callback_query(F.data.startswith("cancel_"))
     async def cancel_action(callback: types.CallbackQuery):
         await callback.message.delete()
         await callback.answer("Действие отменено. Вернитесь в главное меню.")
-    
-    # ======================== ПРОФИЛЬ ========================
-    
+
+    # ── Профиль ───────────────────────────────────────────────────────────────
+
     @dp.message(F.text == "👤 Мой профиль")
     async def profile_button(message: types.Message):
         await message.answer(
             "👤 *Ваш профиль*\n\n"
             "📊 Статус подписки: Активна ✅\n"
-            "📅 Дата истечения: -\n"
-            "📱 Лимит устройств: -\n\n"
-            "⚠️ Функция профиля находится в разработке.\n\n"
-            "Проверьте вашу подписку через кнопку проверки платежа.",
-            parse_mode="Markdown"
+            "📅 Дата истечения: —\n"
+            "📱 Лимит устройств: —\n\n"
+            "⚠️ Функция профиля находится в разработке.",
+            parse_mode="Markdown",
         )
-    
-    # NOTE: instruction button removed — instructions are sent together with subscription after successful payment
-    
-    # ======================== ТЕХПОДДЕРЖКА ========================
-    
+
+    # ── Техподдержка ──────────────────────────────────────────────────────────
+
     @dp.message(F.text == "⚙️ Техподдержка")
     async def support_button(message: types.Message):
         await message.answer(
@@ -502,32 +303,27 @@ def register_handlers(dp):
             "❓ У вас есть вопрос или проблема?\n\n"
             "💬 Напишите в Telegram: @qwertyFall\n\n"
             "Мы ответим вам в кратчайшие сроки!",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
-    
-    # ======================== ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ ========================
-    
+
+    # ── Пользовательское соглашение ───────────────────────────────────────────
+
     @dp.message(F.text == "📋 Пользовательское соглашение")
     async def user_agreement(message: types.Message):
-        # Проверяем, существует ли файл с соглашением
         agreement_path = "user_agreement.txt"
-        
         if os.path.exists(agreement_path):
             try:
-                with open(agreement_path, 'rb') as file:
-                    await message.answer_document(
-                        document=types.FSInputFile(agreement_path),
-                        caption="📋 Пользовательское соглашение"
-                    )
+                await message.answer_document(
+                    document=types.FSInputFile(agreement_path),
+                    caption="📋 Пользовательское соглашение",
+                )
                 logging.info(f"📋 Пользователь {message.from_user.id} скачал соглашение")
             except Exception as e:
                 logging.error(f"❌ Ошибка при отправке соглашения: {e}")
                 await message.answer(
-                    "❌ Не удалось загрузить файл соглашения. "
-                    "Обратитесь в техподдержку."
+                    "❌ Не удалось загрузить файл соглашения. Обратитесь в техподдержку."
                 )
         else:
-            # Если файла нет, отправляем текст в сообщении
             await message.answer(
                 "📋 *Пользовательское соглашение*\n\n"
                 "1️⃣ *Общие положения*\n"
@@ -537,23 +333,24 @@ def register_handlers(dp):
                 "3️⃣ *Запрещенное использование*\n"
                 "Запрещается использовать сервис для незаконной деятельности.\n\n"
                 "4️⃣ *Ограничение ответственности*\n"
-                "Мы не несем ответственность за доступ к запрещенному контенту.\n\n"
+                "Мы не несем ответственность за доступ к запрещённому контенту.\n\n"
                 "5️⃣ *Изменение условий*\n"
                 "Мы оставляем право изменять условия без предварительного уведомления.\n\n"
                 "✅ Спасибо за использование нашего сервиса!",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
-            logging.info(f"📋 Пользователь {message.from_user.id} просмотрел соглашение (текст)")
-    
-    # ======================== ОБРАБОТКА ОСТАЛЬНЫХ СООБЩЕНИЙ ========================
-    
+            logging.info(
+                f"📋 Пользователь {message.from_user.id} просмотрел соглашение (текст)"
+            )
+
+    # ── Прочие сообщения ──────────────────────────────────────────────────────
+
     @dp.message()
     async def default_handler(message: types.Message):
-        """Обработчик для остальных сообщений"""
         await message.answer(
-            "😕 Я не понимаю эту команду.\n\n"
             "Используйте кнопки меню ниже или напишите /start для перезагрузки меню.",
-            reply_markup=main_menu
+            reply_markup=main_menu,
         )
-        logging.info(f"❓ Пользователь {message.from_user.id} отправил неизвестную команду: {message.text}")
-
+        logging.info(
+            f"❓ Пользователь {message.from_user.id} отправил неизвестную команду: {message.text}"
+        )
