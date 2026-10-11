@@ -1,0 +1,1 @@
+"""VPN subscriptions application."""

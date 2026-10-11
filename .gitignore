@@ -25,6 +25,11 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 ENV/
 env/
 
