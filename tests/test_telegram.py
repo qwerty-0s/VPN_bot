@@ -123,3 +123,26 @@ async def test_telegram_error_handler_suppresses_answer_failure(service):
 
     handled = await error_handler(event)
     assert handled is True
+
+
+async def test_telegram_purchase_omits_manual_check_button(service):
+    r = router(service, "https://bot.example")
+    purchase_handler = next(
+        h.callback for h in r.callback_query.handlers if h.callback.__name__ == "purchase"
+    )
+
+    callback = MagicMock()
+    callback.data = "month_1m_1d"
+    callback.from_user.id = 75
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.chat.id = 75
+    callback.message.message_id = 10
+    callback.message.edit_text = AsyncMock()
+
+    await purchase_handler(callback)
+
+    assert callback.message.edit_text.await_count == 1
+    markup = callback.message.edit_text.call_args.kwargs["reply_markup"]
+    button_texts = [btn.text for row in markup.inline_keyboard for btn in row]
+    assert button_texts == ["Оплатить картой", "Закрыть"]

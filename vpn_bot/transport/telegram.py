@@ -111,13 +111,12 @@ def router(service, public_url):
             [InlineKeyboardButton(text="Закрыть", callback_data="cancel_payment")],
         ]
         if order.confirmation_url and order.status == "pending":
-            rows.insert(0, [InlineKeyboardButton(text="Проверить оплату", callback_data=f"check_{order.id}")])
             rows.insert(0, [InlineKeyboardButton(text="Оплатить картой", url=order.confirmation_url)])
         await safe_edit_text(
             callback.message,
             f"Подписка: {order.days} дней, {order.devices} устройств.\n"
             f"К оплате: {order.amount // 100}.{order.amount % 100:02d} ₽.\n"
-            "После оплаты подписка появится в профиле.",
+            "После оплаты подписка придёт автоматически и появится в профиле.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
