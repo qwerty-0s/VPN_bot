@@ -42,6 +42,7 @@ class Settings:
     panel_password: str
     panel_sub_url: str
     panel_verify_ssl: bool
+    panel_inbounds: tuple[str, ...]
     host: str
     port: int
 
@@ -60,6 +61,7 @@ class Settings:
             "XUI_USER",
             "XUI_PASS",
             "XUI_SUB_URL",
+            "XUI_INBOUNDS",
         ]
         missing = [key for key in required if not os.getenv(key)]
         if missing:
@@ -76,6 +78,12 @@ class Settings:
         for key in ("YOO_TEST_MODE", "XUI_VERIFY_SSL"):
             if os.getenv(key, "true").lower() not in ("true", "false"):
                 raise ValueError(f"{key} must be true or false")
+        raw_inbounds = [part.strip() for part in os.environ["XUI_INBOUNDS"].split(",")]
+        panel_inbounds = tuple(part for part in raw_inbounds if part)
+        if len(panel_inbounds) != len(raw_inbounds) or not panel_inbounds:
+            raise ValueError("XUI_INBOUNDS must be a comma-separated list of non-empty inbound names or IDs")
+        if len(set(panel_inbounds)) != len(panel_inbounds):
+            raise ValueError("XUI_INBOUNDS must not contain duplicates")
         return cls(
             os.environ["API_TOKEN"],
             os.environ["WEBHOOK_URL"],
@@ -91,6 +99,7 @@ class Settings:
             os.environ["XUI_PASS"],
             os.environ["XUI_SUB_URL"].rstrip("/"),
             os.getenv("XUI_VERIFY_SSL", "true").lower() == "true",
+            panel_inbounds,
             os.getenv("WEBAPP_HOST", "127.0.0.1"),
             int(os.getenv("WEBAPP_PORT", "8443")),
         )

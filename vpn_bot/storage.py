@@ -60,7 +60,7 @@ subscriptions = Table(
     Column("sub_id", String(100), nullable=False),
     Column("expiry_ms", BigInteger, nullable=False),
     Column("devices", Integer, nullable=False),
-    Column("port", Integer, unique=True),
+    Column("port", Integer),
     Column("synced", Boolean, nullable=False),
     Column("enabled", Boolean, nullable=False),
 )

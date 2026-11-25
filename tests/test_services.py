@@ -4,7 +4,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from vpn_bot.domain import DAY_MS, InvalidPayment, ManualReview, NotFound, RetryLater, kopecks
+from vpn_bot.domain import (
+    DAY_MS,
+    InvalidPayment,
+    ManualReview,
+    NotFound,
+    Order,
+    RetryLater,
+    UnreachableUser,
+    kopecks,
+)
 from vpn_bot.services import Service
 from vpn_bot.storage import SQLStore
 
@@ -199,3 +208,248 @@ def test_exact_money(value, expected):
 def test_invalid_money(value):
     with pytest.raises(InvalidPayment):
         kopecks(value)
+
+
+async def test_mark_notified_and_confirm_flag(service):
+    order = await service.purchase(54, 1, 1, "mn1")
+    assert not (await service.store.order(order.id)).notified
+
+    # mark_notified on pending order
+    res = await service.mark_notified(order.id)
+    assert res.notified is True
+    assert (await service.store.order(order.id)).notified is True
+
+    # idempotent call
+    res2 = await service.mark_notified(order.id)
+    assert res2.notified is True
+
+    # unknown order
+    assert await service.mark_notified("non-existent") is None
+
+    # confirm with mark_notified=True
+    order2 = await service.purchase(55, 1, 1, "mn2")
+    service.gateway.succeed(order2)
+    confirmed = await service.confirm(order2.id, mark_notified=True)
+    assert confirmed.notified is True
+    assert (await service.store.order(order2.id)).notified is True
+
+
+async def test_create_reserved_does_not_hold_db_transaction_during_gateway_create(service):
+    unreserved = Order("unres-1", "req-nb1", 60, 10000, 30, 1, service.clock(), service.return_url)
+    async with service.store.transaction(60) as tx:
+        await tx.add_order(unreserved)
+
+    in_gateway = asyncio.Event()
+    release_gateway = asyncio.Event()
+    original_create = service.gateway.create
+
+    async def slow_create(ord_arg):
+        in_gateway.set()
+        await release_gateway.wait()
+        return await original_create(ord_arg)
+
+    service.gateway.create = slow_create
+    task = asyncio.create_task(service.create_reserved("unres-1"))
+    await in_gateway.wait()
+
+    # DB transaction on another account succeeds immediately
+    async with service.store.transaction(999) as tx:
+        await tx.subscription(999)
+
+    release_gateway.set()
+    res = await task
+    assert res.payment_id is not None
+
+
+async def test_sync_does_not_hold_db_transaction_during_panel_ensure(service):
+    order = await service.purchase(61, 1, 1, "nb2")
+    service.gateway.succeed(order)
+    await service.confirm(order.id)
+    sub = await service.store.subscription(61)
+    async with service.store.transaction(61) as tx:
+        await tx.save_subscription(replace(sub, synced=False))
+
+    in_panel = asyncio.Event()
+    release_panel = asyncio.Event()
+    original_ensure = service.panel.ensure
+
+    async def slow_ensure(s):
+        in_panel.set()
+        await release_panel.wait()
+        return await original_ensure(s)
+
+    service.panel.ensure = slow_ensure
+    task = asyncio.create_task(service.sync(61))
+    await in_panel.wait()
+
+    # DB transaction succeeds immediately while panel.ensure is suspended
+    async with service.store.transaction(999) as tx:
+        await tx.subscription(999)
+
+    release_panel.set()
+    res = await task
+    assert res.synced is True
+
+
+async def test_notify_does_not_hold_db_transaction_during_send(service):
+    order = await service.purchase(62, 1, 1, "nb3")
+    service.gateway.succeed(order)
+    await service.confirm(order.id)
+
+    in_send = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def slow_send(s):
+        in_send.set()
+        await release_send.wait()
+
+    task = asyncio.create_task(service.notify(slow_send))
+    await in_send.wait()
+
+    # DB transaction succeeds immediately while send is waiting
+    async with service.store.transaction(999) as tx:
+        await tx.subscription(999)
+
+    release_send.set()
+    await task
+    assert (await service.store.order(order.id)).notified is True
+
+
+async def test_notify_marks_notified_on_unreachable_user(service):
+    order = await service.purchase(63, 1, 1, "perm_unreach")
+    service.gateway.succeed(order)
+    await service.confirm(order.id)
+
+    failing_send = AsyncMock(side_effect=UnreachableUser("User blocked"))
+    await service.notify(failing_send)
+
+    updated = await service.store.order(order.id)
+    assert updated.notified is True
+
+    next_send = AsyncMock()
+    await service.notify(next_send)
+    assert next_send.await_count == 0
+
+
+async def test_reconcile_moves_invalid_payment_to_review(service):
+    order = await service.purchase(81, 1, 1, "inv-pay")
+    service.gateway.succeed(order)
+    # Corrupt remote amount to trigger InvalidPayment
+    service.gateway.payments[order.id] = replace(service.gateway.payments[order.id], amount=999999)
+
+    await service.reconcile()
+
+    updated = await service.store.order(order.id)
+    assert updated.status == "review"
+    assert order.id not in [o.id for o in await service.store.pending_orders()]
+
+
+async def test_trial_existing_subscription_suppresses_retry_later_when_panel_fails(service):
+    first = await service.trial(82)
+    assert first.synced is True
+
+    # When panel fails, second call on existing subscription should not raise RetryLater
+    service.panel.fail = True
+    second = await service.trial(82)
+    assert second.uuid == first.uuid
+    assert second.telegram_id == 82
+
+
+async def test_notify_deduplicates_by_telegram_id(service):
+    o1 = await service.purchase(83, 1, 1, "dedup-1")
+    service.gateway.succeed(o1)
+    await service.confirm(o1.id, mark_notified=False)
+
+    o2 = await service.purchase(83, 1, 1, "dedup-2")
+    service.gateway.succeed(o2)
+    await service.confirm(o2.id, mark_notified=False)
+
+    # Both orders are applied and not notified
+    assert (await service.store.order(o1.id)).notified is False
+    assert (await service.store.order(o2.id)).notified is False
+
+    send = AsyncMock()
+    await service.notify(send)
+
+    # Exactly 1 notification sent to user 83
+    assert send.await_count == 1
+    assert (await service.store.order(o1.id)).notified is True
+    assert (await service.store.order(o2.id)).notified is True
+
+
+async def test_sync_retries_when_subscription_state_changes_during_ensure(service):
+    order = await service.purchase(84, 1, 1, "race-sync-1")
+    service.gateway.succeed(order)
+    await service.confirm(order.id)
+    sub = await service.store.subscription(84)
+
+    # Unsync the subscription
+    async with service.store.transaction(84) as tx:
+        await tx.save_subscription(replace(sub, synced=False))
+
+    first_call = True
+    original_ensure = service.panel.ensure
+
+    async def race_ensure(s):
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            # Simulate a concurrent purchase confirming and changing expiry_ms in DB
+            async with service.store.transaction(84) as tx:
+                curr = await tx.subscription(84)
+                await tx.save_subscription(replace(curr, expiry_ms=curr.expiry_ms + 10 * DAY_MS))
+        return await original_ensure(s)
+
+    service.panel.ensure = race_ensure
+    synced = await service.sync(84)
+    assert synced.synced is True
+    assert service.panel.state[sub.uuid].expiry_ms == synced.expiry_ms
+
+
+async def test_confirm_does_not_mark_notified_if_sync_fails(service):
+    order = await service.purchase(85, 1, 1, "k-sync-fail")
+    service.gateway.succeed(order)
+    service.panel.fail = True
+
+    with pytest.raises(RetryLater):
+        await service.confirm(order.id, mark_notified=True)
+
+    curr_order = await service.store.order(order.id)
+    assert curr_order.applied is True
+    assert curr_order.notified is False
+
+    service.panel.fail = False
+    await service.reconcile()
+    send = AsyncMock()
+    await service.notify(send)
+    assert send.await_count == 1
+    assert (await service.store.order(order.id)).notified is True
+
+
+async def test_notify_skips_unsynced_subscription(service):
+    order = await service.purchase(86, 1, 1, "k-notify-unsynced")
+    service.gateway.succeed(order)
+    service.panel.fail = True
+    with pytest.raises(RetryLater):
+        await service.confirm(order.id)
+
+    send = AsyncMock()
+    await service.notify(send)
+    assert send.await_count == 0
+    assert (await service.store.order(order.id)).notified is False
+
+    service.panel.fail = False
+    await service.sync(86)
+    await service.notify(send)
+    assert send.await_count == 1
+    assert (await service.store.order(order.id)).notified is True
+
+
+async def test_multiple_users_sync_with_shared_none_port(service):
+    service.panel.ensure = AsyncMock(return_value=None)
+    sub1 = await service.trial(101)
+    sub2 = await service.trial(102)
+    assert sub1.synced is True
+    assert sub1.port is None
+    assert sub2.synced is True
+    assert sub2.port is None

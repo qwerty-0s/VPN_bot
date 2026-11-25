@@ -48,3 +48,8 @@ env/
 # Logs
 *.log
 
+
+# Code reviews and bundles
+gemini_review*.md
+*_bundle.txt
+*_review.zip

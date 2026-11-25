@@ -22,6 +22,10 @@ class ManualReview(RuntimeError):
     pass
 
 
+class UnreachableUser(RuntimeError):
+    pass
+
+
 def kopecks(value: str) -> int:
     try:
         number = Decimal(str(value)) * 100

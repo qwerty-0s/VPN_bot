@@ -4,6 +4,9 @@ import asyncio
 import logging
 import secrets
 import time
+import weakref
+from collections import defaultdict
+from contextlib import suppress
 from dataclasses import replace
 from uuid import uuid4
 
@@ -15,6 +18,7 @@ from .domain import (
     Order,
     RetryLater,
     Subscription,
+    UnreachableUser,
 )
 from .ports import Panel, PaymentGateway, Store
 
@@ -37,6 +41,16 @@ class Service:
         self.store, self.gateway, self.panel = store, gateway, panel
         self.shop_id, self.test_payments = shop_id, test_payments
         self.return_url, self.tariffs, self.clock = return_url, tariffs, clock
+        self._user_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+
+    def _get_user_lock(self, telegram_id: int) -> asyncio.Lock:
+        lock = self._user_locks.get(telegram_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_locks[telegram_id] = lock
+        return lock
 
     def _new_subscription(self, telegram_id, expiry_ms, devices):
         short_id = secrets.token_urlsafe(24)
@@ -89,28 +103,42 @@ class Service:
         # Bound orders are never POSTed again. Store reservation survives timeouts.
         if order.payment_id:
             return order
-        async with self.store.transaction(order.telegram_id) as tx:
-            order = await tx.order(order_id)
+        lock = self._get_user_lock(order.telegram_id)
+        async with lock:
+            order = await self.store.order(order_id)
+            if not order:
+                raise NotFound("Order not found")
             if order.payment_id:
                 return order
             if order.status == "review" or self.clock() - order.created_ms >= 23 * 60 * 60 * 1000:
-                await tx.save_order(replace(order, status="review"))
-                needs_review = True
-            else:
-                needs_review = False
-                remote = await asyncio.wait_for(self.gateway.create(order), timeout=20)
-                self._validate(order, remote)
-                if not remote.confirmation_url and remote.status == "pending":
-                    raise InvalidPayment("Missing confirmation URL")
+                async with self.store.transaction(order.telegram_id) as tx:
+                    current = await tx.order(order_id)
+                    if current and current.payment_id:
+                        return current
+                    if current and current.status != "review":
+                        await tx.save_order(replace(current, status="review"))
+                raise ManualReview("Creation retry window expired; reconcile with YooKassa")
+
+            remote = await asyncio.wait_for(self.gateway.create(order), timeout=20)
+            self._validate(order, remote)
+            if not remote.confirmation_url and remote.status == "pending":
+                raise InvalidPayment("Missing confirmation URL")
+            async with self.store.transaction(order.telegram_id) as tx:
+                current = await tx.order(order_id)
+                if not current:
+                    raise NotFound("Order not found")
+                if current.payment_id:
+                    return current
                 order = replace(
-                    order, payment_id=remote.id, confirmation_url=remote.confirmation_url, status="pending"
+                    current,
+                    payment_id=remote.id,
+                    confirmation_url=remote.confirmation_url,
+                    status="pending",
                 )
                 await tx.save_order(order)
-        if needs_review:
-            raise ManualReview("Creation retry window expired; reconcile with YooKassa")
-        return order
+            return order
 
-    async def confirm(self, order_id, telegram_id=None):
+    async def confirm(self, order_id, telegram_id=None, mark_notified=False):
         order = await self.store.order(order_id)
         if not order or (telegram_id is not None and order.telegram_id != telegram_id):
             raise NotFound("Order not found")
@@ -118,7 +146,7 @@ class Service:
             raise ManualReview("Legacy or ambiguous payment needs review")
         if not order.payment_id:
             raise RetryLater("Payment is still being created")
-        remote = await self.gateway.fetch(order.payment_id)
+        remote = await asyncio.wait_for(self.gateway.fetch(order.payment_id), timeout=20)
         self._validate(order, remote)
         async with self.store.transaction(order.telegram_id) as tx:
             current = await tx.order(order.id)
@@ -140,14 +168,27 @@ class Service:
                     else self._new_subscription(order.telegram_id, expiry, order.devices)
                 )
                 await tx.save_subscription(subscription)
-                order = replace(current, status="succeeded", applied=True)
+                order = replace(current, status="succeeded", applied=True, notified=False)
                 await tx.save_order(order)
             else:
                 order = replace(current, status=remote.status)
                 await tx.save_order(order)
         if order.applied:
             await self.sync(order.telegram_id)
+            if mark_notified:
+                order = await self.mark_notified(order.id)
         return order
+
+    async def mark_notified(self, order_id):
+        order = await self.store.order(order_id)
+        if not order or order.notified:
+            return order
+        async with self.store.transaction(order.telegram_id) as tx:
+            current = await tx.order(order_id)
+            if current and not current.notified:
+                current = replace(current, notified=True)
+                await tx.save_order(current)
+            return current
 
     async def webhook(self, payment_id):
         order = await self.store.by_payment(payment_id)
@@ -157,23 +198,47 @@ class Service:
         return await self.confirm(order.id)
 
     async def sync(self, telegram_id):
-        # Serialize across processes while applying an ABSOLUTE panel state.
-        # If the response/commit is lost, retry locates the persisted UUID in the panel.
-        async with self.store.transaction(telegram_id) as tx:
-            subscription = await tx.subscription(telegram_id)
-            if subscription and not subscription.synced:
+        # Serialize across tasks while applying an ABSOLUTE panel state.
+        # Panel interaction is executed outside store.transaction.
+        lock = self._get_user_lock(telegram_id)
+        async with lock:
+            while True:
+                subscription = await self.store.subscription(telegram_id)
+                if not subscription or subscription.synced:
+                    return subscription
                 port = await asyncio.wait_for(self.panel.ensure(subscription), timeout=20)
-                subscription = replace(subscription, port=port, synced=True)
-                await tx.save_subscription(subscription)
-            return subscription
+                async with self.store.transaction(telegram_id) as tx:
+                    current = await tx.subscription(telegram_id)
+                    if not current:
+                        return None
+                    if current.synced:
+                        return current
+                    if (current.expiry_ms, current.devices, current.uuid) == (
+                        subscription.expiry_ms,
+                        subscription.devices,
+                        subscription.uuid,
+                    ):
+                        current = replace(current, port=port, synced=True)
+                        await tx.save_subscription(current)
+                        return current
+                    # DB state changed during panel.ensure; persist port and retry loop.
+                    current = replace(current, port=port)
+                    await tx.save_subscription(current)
 
     async def trial(self, telegram_id):
+        is_existing = False
         async with self.store.transaction(telegram_id) as tx:
             subscription = await tx.subscription(telegram_id)
             if not subscription:
                 subscription = self._new_subscription(telegram_id, self.clock() + 3 * DAY_MS, 1)
                 await tx.save_subscription(subscription)
+            else:
+                is_existing = True
         # Existing subscriptions are returned without granting a second trial.
+        if is_existing:
+            with suppress(RetryLater, asyncio.TimeoutError):
+                return await self.sync(telegram_id)
+            return await self.store.subscription(telegram_id)
         return await self.sync(telegram_id)
 
     async def reconcile(self):
@@ -182,6 +247,16 @@ class Service:
                 if not order.payment_id:
                     order = await self.create_reserved(order.id)
                 await self.confirm(order.id)
+            except InvalidPayment as exc:
+                log.warning(
+                    "Order %s reconciliation failed due to invalid payment (%s); marked for review",
+                    order.id,
+                    type(exc).__name__,
+                )
+                async with self.store.transaction(order.telegram_id) as tx:
+                    current = await tx.order(order.id)
+                    if current and current.status != "review":
+                        await tx.save_order(replace(current, status="review"))
             except Exception as exc:
                 # Never log response bodies, credentials, metadata or payment URLs.
                 log.warning("Order reconciliation failed (%s)", type(exc).__name__)
@@ -192,13 +267,32 @@ class Service:
                 log.warning("Panel reconciliation failed (%s)", type(exc).__name__)
 
     async def notify(self, send):
-        for candidate in await self.store.pending_notifications():
+        candidates = await self.store.pending_notifications()
+        by_user = defaultdict(list)
+        for candidate in candidates:
+            by_user[candidate.telegram_id].append(candidate)
+
+        for telegram_id, user_orders in by_user.items():
             try:
-                async with self.store.transaction(candidate.telegram_id) as tx:
-                    order = await tx.order(candidate.id)
-                    subscription = await tx.subscription(candidate.telegram_id)
-                    if not order.notified and subscription and subscription.synced:
+                pending_for_user = []
+                for o in user_orders:
+                    current_order = await self.store.order(o.id)
+                    if current_order and not current_order.notified:
+                        pending_for_user.append(current_order)
+                if not pending_for_user:
+                    continue
+
+                subscription = await self.store.subscription(telegram_id)
+                if subscription and subscription.synced:
+                    try:
                         await asyncio.wait_for(send(subscription), timeout=10)
-                        await tx.save_order(replace(order, notified=True))
+                    except UnreachableUser as exc:
+                        log.warning(
+                            "User %s unreachable (%s), marking orders as notified",
+                            telegram_id,
+                            type(exc).__name__,
+                        )
+                    for order in pending_for_user:
+                        await self.mark_notified(order.id)
             except Exception as exc:
                 log.warning("Subscription notification failed (%s)", type(exc).__name__)

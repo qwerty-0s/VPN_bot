@@ -4,9 +4,11 @@ from contextlib import AsyncExitStack, suppress
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramForbiddenError, TelegramNotFound
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import ClientSession, CookieJar, DummyCookieJar, web
 
+from .domain import UnreachableUser
 from .integrations.xui import XUI
 from .integrations.yookassa import YooKassa
 from .services import Service
@@ -37,6 +39,7 @@ def create_app(settings):
                 settings.panel_user,
                 settings.panel_password,
                 settings.panel_verify_ssl,
+                settings.panel_inbounds,
             )
             service = Service(
                 store,
@@ -50,13 +53,21 @@ def create_app(settings):
             # Handlers/routes are installed before aiohttp freezes the router.
             dp.include_router(router(service, settings.public_url))
             register_routes(app, service, sub_session, settings.panel_sub_url)
-            await bot.set_webhook(settings.webhook_url, secret_token=settings.telegram_secret)
+            await bot.set_webhook(
+                settings.webhook_url,
+                secret_token=settings.telegram_secret,
+                allowed_updates=dp.resolve_used_update_types(),
+            )
 
             async def send(subscription):
-                await bot.send_message(
-                    subscription.telegram_id,
-                    "Оплата получена.\n" + profile_text(subscription, settings.public_url, service.clock()),
-                )
+                try:
+                    await bot.send_message(
+                        subscription.telegram_id,
+                        "Оплата получена.\n"
+                        + profile_text(subscription, settings.public_url, service.clock()),
+                    )
+                except (TelegramForbiddenError, TelegramNotFound) as exc:
+                    raise UnreachableUser(str(exc)) from exc
 
             async def worker():
                 while True:

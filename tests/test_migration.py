@@ -93,3 +93,22 @@ async def test_trial_only_legacy_schema_is_supported(tmp_path):
         assert subscription.sub_id == "trial_234567"
     finally:
         await store.close()
+
+
+async def test_legacy_import_handles_null_ip_limit_and_is_active(tmp_path):
+    path = tmp_path / "nulls.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE users (telegram_id INTEGER PRIMARY KEY, uuid TEXT, email TEXT,
+                port INTEGER, expiry_time INTEGER, ip_limit INTEGER, short_id TEXT, is_active BOOLEAN);
+            INSERT INTO users VALUES (10, 'uuid-null', 'mail1234', 12001, 1800000000000, NULL, 'short-null', NULL);
+        """)
+    store = SQLStore(f"sqlite+aiosqlite:///{path}")
+    try:
+        result = await migrate(store)
+        assert result["subscriptions"] == 1
+        subscription = await store.subscription(10)
+        assert subscription.devices == 1
+        assert subscription.enabled is True
+    finally:
+        await store.close()

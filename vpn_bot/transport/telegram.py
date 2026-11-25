@@ -1,8 +1,10 @@
 import logging
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
@@ -43,6 +45,15 @@ def profile_text(subscription, public_url, now_ms):
     return text
 
 
+async def safe_edit_text(message, text, **kwargs):
+    try:
+        return await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return None
+        raise
+
+
 def router(service, public_url):
     result = Router()
     result.message.filter(F.chat.type == "private")
@@ -81,7 +92,7 @@ def router(service, public_url):
             return
         rows.append([("Закрыть", "cancel_buy")])
         await callback.answer()
-        await callback.message.edit_text("Выберите срок:", reply_markup=keyboard(rows))
+        await safe_edit_text(callback.message, "Выберите срок:", reply_markup=keyboard(rows))
 
     @result.callback_query(F.data.startswith("month_"))
     async def purchase(callback: types.CallbackQuery):
@@ -97,12 +108,13 @@ def router(service, public_url):
         request_key = f"buy:{callback.from_user.id}:{callback.message.chat.id}:{callback.message.message_id}:{months}:{devices}"
         order = await service.purchase(callback.from_user.id, months, devices, request_key)
         rows = [
-            [InlineKeyboardButton(text="Проверить оплату", callback_data=f"check_{order.id}")],
             [InlineKeyboardButton(text="Закрыть", callback_data="cancel_payment")],
         ]
         if order.confirmation_url and order.status == "pending":
+            rows.insert(0, [InlineKeyboardButton(text="Проверить оплату", callback_data=f"check_{order.id}")])
             rows.insert(0, [InlineKeyboardButton(text="Оплатить картой", url=order.confirmation_url)])
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             f"Подписка: {order.days} дней, {order.devices} устройств.\n"
             f"К оплате: {order.amount // 100}.{order.amount % 100:02d} ₽.\n"
             "После оплаты подписка появится в профиле.",
@@ -119,14 +131,15 @@ def router(service, public_url):
             order_id = legacy.id
         else:
             order_id = callback.data.removeprefix("check_")
-        order = await service.confirm(order_id, callback.from_user.id)
+        order = await service.confirm(order_id, callback.from_user.id, mark_notified=True)
         if order.applied:
             subscription = await service.store.subscription(callback.from_user.id)
-            await callback.message.edit_text(
-                "Оплата получена.\n" + profile_text(subscription, public_url, service.clock())
+            await safe_edit_text(
+                callback.message,
+                "Оплата получена.\n" + profile_text(subscription, public_url, service.clock()),
             )
         elif order.status == "canceled":
-            await callback.message.edit_text("Платёж отменён. Вы можете выбрать тариф снова.")
+            await safe_edit_text(callback.message, "Платёж отменён. Вы можете выбрать тариф снова.")
         else:
             # Keep the original message/buttons, so another check remains possible.
             await callback.message.answer("Оплата пока не подтверждена. Повторите проверку позже.")
@@ -134,7 +147,7 @@ def router(service, public_url):
     @result.callback_query(F.data.startswith("cancel_"))
     async def close(callback: types.CallbackQuery):
         await callback.answer()
-        await callback.message.edit_text("Меню закрыто. Уже созданный платёж остаётся действительным.")
+        await safe_edit_text(callback.message, "Меню закрыто. Уже созданный платёж остаётся действительным.")
 
     @result.message(F.text == "🚀 Пробная подписка")
     async def trial(message: types.Message):
@@ -185,7 +198,8 @@ def router(service, public_url):
             event.update.callback_query and event.update.callback_query.message
         )
         if message:
-            await message.answer(text)
+            with suppress(Exception):
+                await message.answer(text)
         return True
 
     return result

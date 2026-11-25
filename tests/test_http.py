@@ -134,6 +134,7 @@ async def test_startup_routes_telegram_secret_and_shutdown(tmp_path, monkeypatch
         "password",
         "https://sub.example",
         True,
+        ("new-reality", "new-reality WARP"),
         "127.0.0.1",
         8443,
     )
@@ -154,5 +155,5 @@ async def test_startup_routes_telegram_secret_and_shutdown(tmp_path, monkeypatch
         assert (
             await client.post("/webhook", json=update, headers={"X-Telegram-Bot-Api-Secret-Token": "secret"})
         ).status == 200
-        set_webhook.assert_awaited_once_with(settings.webhook_url, secret_token="secret")
+        set_webhook.assert_awaited_once_with(settings.webhook_url, secret_token="secret", allowed_updates=["callback_query", "message"])
         assert telegram_request.await_count == 1

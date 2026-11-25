@@ -54,10 +54,10 @@ async def migrate(store):
                 row["short_id"],
                 row.get("sub_id") or "trial_" + row["email"][-6:],
                 int(row["expiry_time"]),
-                int(row.get("ip_limit", 1)),
+                int(row.get("ip_limit") or 1),
                 int(row["port"]),
                 True,
-                bool(row.get("is_active", True)),
+                True if row.get("is_active") is None else bool(row.get("is_active")),
             )
             await conn.execute(insert(subscriptions).values(**asdict(subscription)))
             imported.add(user_id)
